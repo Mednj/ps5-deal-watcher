@@ -56,6 +56,7 @@ def test_denial_stops_without_retry(monkeypatch, status, expected):
     outcome = sources.check_vinted([('Elden Ring PS5', 4999)])
     assert outcome.status == expected and not outcome.listings
     assert len(requests) == 1
+    if status==403:assert 'homepage' in outcome.message and '403' in outcome.message
     if status == 429:
         assert outcome.retry_after == 600
 
@@ -80,7 +81,21 @@ def test_search_is_bounded_deduplicated_and_locally_price_filtered(monkeypatch):
     assert outcome.status == 'experimental'
     assert len(outcome.listings) == 3 and len(requests) == 3
     assert {r.url.params['order'] for r in requests[1:]} == {'price_low_to_high', 'newest_first'}
-    assert sources.check_vinted([('game', 5000)] * 9).status == 'error'
+    capped=sources.check_vinted([(f'game {n}',5000) for n in range(9)])
+    assert capped.status == 'error' and '9 distinct' in capped.message and not capped.listings
+
+
+def test_explicit_duplicate_vinted_searches_are_merged(monkeypatch):
+    real_client=httpx.Client
+    requests=[]
+    def respond(request):
+        requests.append(request)
+        if request.url.host=='www.vinted.fr':return httpx.Response(200,text='Anonymous home')
+        return httpx.Response(200,json={'items':[]})
+    monkeypatch.setattr(sources.httpx,'Client',lambda **kwargs:real_client(transport=httpx.MockTransport(respond),**kwargs))
+    outcome=sources.check_vinted([('Elden Ring PS5',4000),('Elden Ring PS5',5000)])
+    assert outcome.status=='experimental' and '1 searches' in outcome.message
+    assert len(requests)==3
 
 
 def test_name_price_qualifies_without_disc_platform_or_fees():

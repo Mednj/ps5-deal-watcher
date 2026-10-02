@@ -36,18 +36,30 @@ class FetchError(Exception):
     def __init__(self, status, message, retry_after=0):
         self.status,self.message,self.retry_after=status,message,retry_after
 
-def fetch_bytes(source, url, max_bytes=4_000_000):
+def source_http_event(source, stage, response, byte_count=None):
+    parts=urlsplit(str(response.url))
+    event={'event':'source_http_response','source':source,'stage':stage,
+           'host':parts.hostname,'path':parts.path,'status':response.status_code,
+           'content_type':response.headers.get('content-type','').split(';',1)[0],
+           'server':response.headers.get('server','')[:80],
+           'datadome_header_present':any(k.lower().startswith('x-datadome') for k in response.headers)}
+    if byte_count is not None:event['bytes']=byte_count
+    print(json.dumps(event,sort_keys=True),flush=True)
+
+
+def fetch_bytes(source, url, max_bytes=4_000_000, stage='feed'):
     with httpx.Client(timeout=httpx.Timeout(20,connect=8),follow_redirects=False,trust_env=False,headers={'User-Agent':AGENT}) as client:
         for _ in range(4):
             parts=urlsplit(url)
             if parts.scheme!='https' or parts.hostname not in HOSTS[source] or parts.port not in (None,443) or parts.username or parts.password:
                 raise FetchError('blocked','Redirect outside the allowed source hosts was refused.')
             with client.stream('GET',url) as response:
+                source_http_event(source,stage,response)
                 if response.status_code in (301,302,303,307,308):
                     url=urljoin(url,response.headers.get('location',''))
                     continue
                 if response.status_code in (401,403):
-                    raise FetchError('blocked','Access denied; use native alerts. No bypass attempted.')
+                    raise FetchError('blocked',f'{source.title()} {stage} request denied access (HTTP {response.status_code}). Use native alerts; no bypass attempted.')
                 if response.status_code==429:
                     retry=response.headers.get('retry-after','3600')
                     try: retry=max(60,min(int(retry),86400))
@@ -63,7 +75,9 @@ def fetch_bytes(source, url, max_bytes=4_000_000):
                     size+=len(chunk)
                     if size>max_bytes: raise FetchError('error','Response exceeded the bounded download size.')
                     chunks.append(chunk)
-                return b''.join(chunks)
+                body=b''.join(chunks)
+                source_http_event(source,stage,response,len(body))
+                return body
         raise FetchError('error','Too many redirects.')
 
 def plain(value):
@@ -140,11 +154,11 @@ def check(source):
         return Outcome('blocked','Direct monitoring restricted. Use native saved searches and manual entry.',[])
     try:
         url=URLS[source]; parts=urlsplit(url)
-        robots=fetch_bytes(source,f'https://{parts.netloc}/robots.txt',100000).decode('utf-8','replace')
+        robots=fetch_bytes(source,f'https://{parts.netloc}/robots.txt',100000,stage='robots').decode('utf-8','replace')
         policy=RobotFileParser();policy.parse(robots.splitlines())
         if not policy.can_fetch(AGENT,url):
             return Outcome('blocked','robots.txt disallows this path. No page fetched.',[])
-        body=fetch_bytes(source,url)
+        body=fetch_bytes(source,url,stage='feed' if source=='dealabs' else 'catalogue')
         listings=parse_dealabs(body) if source=='dealabs' else parse_easycash(body)
         return Outcome('verified working' if source=='dealabs' else 'experimental',f'{len(listings)} recent feed entries.' if source=='dealabs' else f'{len(listings)} first-page catalogue references; review only.',listings)
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
@@ -152,11 +166,12 @@ def check(source):
     except Exception:return Outcome('error','Unexpected adapter/parser failure. Existing listings preserved.',[])
 
 
-def vinted_response(client, url, **kwargs):
+def vinted_response(client, url, stage='catalogue', **kwargs):
     # Fixed endpoints, bounded bodies and no redirects. Never retry access denials.
     with client.stream('GET', url, **kwargs) as response:
+        source_http_event('vinted',stage,response)
         if response.status_code in (401,403):
-            raise FetchError('blocked','Vinted denied anonymous access. No bypass attempted.',86400)
+            raise FetchError('blocked',f'Vinted {stage} request denied anonymous access (HTTP {response.status_code}). No bypass attempted.',86400)
         if response.status_code==429:
             from email.utils import parsedate_to_datetime
             value=response.headers.get('retry-after','300')
@@ -164,13 +179,14 @@ def vinted_response(client, url, **kwargs):
             except ValueError:
                 try: retry=int(parsedate_to_datetime(value).timestamp()-time.time())
                 except Exception: retry=300
-            raise FetchError('rate-limited','Vinted rate limited checks; waiting before retry.',max(60,min(retry,86400)))
+            raise FetchError('rate-limited',f'Vinted {stage} request was rate limited (HTTP 429); waiting before retry.',max(60,min(retry,86400)))
         if response.status_code!=200:
             raise FetchError('error',f'Vinted returned HTTP {response.status_code}.')
         body=bytearray()
         for chunk in response.iter_bytes():
             body.extend(chunk)
             if len(body)>4_000_000:raise FetchError('error','Vinted response exceeded download limit.')
+        source_http_event('vinted',stage,response,len(body))
         return bytes(body)
 
 
@@ -212,17 +228,20 @@ def check_vinted(queries=None):
                         grouped[query]=max(grouped.get(query,0),watch.max_cents)
             queries=list(grouped.items())
         if not queries:return Outcome('experimental','No active Vinted watches to search.',[])
-        if len(queries)>8:return Outcome('error','Vinted supports at most 8 distinct active game/alias searches. Reduce searches to avoid partial coverage.',[])
+        grouped={}
+        for name,budget in queries:grouped[name]=max(grouped.get(name,0),budget)
+        queries=list(grouped.items())
+        if len(queries)>8:return Outcome('error',f'Vinted has {len(queries)} distinct active game/alias searches; the per-check limit is 8. Reduce active searches to avoid partial coverage.',[])
         results={}
         with httpx.Client(timeout=httpx.Timeout(20,connect=8),follow_redirects=False,trust_env=False,headers={'User-Agent':AGENT,'Accept-Language':'fr-FR'}) as client:
-            vinted_response(client,'https://www.vinted.fr/')
+            vinted_response(client,'https://www.vinted.fr/',stage='homepage')
             headers={'Accept':'application/json','Platform':'web','x-next-app':'marketplace-web','Origin':'https://www.vinted.fr','Referer':'https://www.vinted.fr/','Locale':'fr-FR'}
             anon=client.cookies.get('anon_id')
             if anon:headers['X-Anon-Id']=anon
             for name,budget in queries:
                 for order in ('price_low_to_high','newest_first'):
                     params={'page':1,'per_page':24,'search_text':name,'order':order,'price_to':format(Decimal(budget)/100,'.2f'),'currency':'EUR'}
-                    body=vinted_response(client,'https://api.vinted.fr/svc-catalogue/items',params=params,headers=headers)
+                    body=vinted_response(client,'https://api.vinted.fr/svc-catalogue/items',stage='catalogue',params=params,headers=headers)
                     for listing in parse_vinted(body):
                         if listing.item_cents<=budget:results[listing.external_id]=listing
         return Outcome('experimental',f'{len(results)} catalogue listings from {len(queries)} searches (cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.',list(results.values()))

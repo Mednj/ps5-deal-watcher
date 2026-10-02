@@ -17,6 +17,17 @@ def test_http_failures_are_explicit(monkeypatch,status,expected):
     assert exc.value.status==expected
     if status==429:assert exc.value.retry_after==300
 
+def test_dealabs_denial_identifies_request_stage_without_logging_body(monkeypatch,capsys):
+    real_client=httpx.Client
+    transport=httpx.MockTransport(lambda req:httpx.Response(403,headers={'content-type':'text/html','server':'test'},text='private challenge body'))
+    monkeypatch.setattr(sources.httpx,'Client',lambda **kwargs:real_client(transport=transport,**kwargs))
+    with pytest.raises(sources.FetchError) as exc:
+        sources.fetch_bytes('dealabs',sources.URLS['dealabs'],stage='robots')
+    output=capsys.readouterr().out
+    assert exc.value.status=='blocked' and 'robots' in exc.value.message and '403' in exc.value.message
+    assert '"stage": "robots"' in output and '"status": 403' in output
+    assert 'private challenge body' not in output and '?' not in output
+
 def test_redirect_to_private_host_refused(monkeypatch):
     real_client=httpx.Client
     transport=httpx.MockTransport(lambda req:httpx.Response(302,headers={'location':'http://127.0.0.1/private'}))
