@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 import httpx
 
 from .models import Listing, HOSTS, cents
+from scripts.leboncoin_limits import MAX_PAGES, client_budget, CHECK_BUDGET
 from .matching import normalize, phrase
 
 AGENT = 'PS5DealWatcher/0.1 (personal public-feed reader)'
@@ -22,6 +23,7 @@ URLS = {'dealabs':'https://www.dealabs.com/rss/groupe/jeux-playstation-5',
         'vinted':'https://www.vinted.fr/',
         'leboncoin':'https://www.leboncoin.fr/'}
 MIN_INTERVAL = {'dealabs':300, 'easycash':14400, 'leboncoin':300, 'vinted':300}
+CHECK_TIMEOUT = {'leboncoin': CHECK_BUDGET}
 
 @dataclass
 class Outcome:
@@ -261,8 +263,8 @@ def check_leboncoin(queries=None):
             queries=list(grouped.items())
         if not queries:return Outcome('experimental','No active Leboncoin watches to search.',[])
         if len(queries)>4:return Outcome('error','Leboncoin supports at most 4 distinct active game/alias searches.',[])
-        with httpx.Client(timeout=150,trust_env=False) as client:
-            response=client.post(os.environ.get('LEBONCOIN_BROWSER_URL','http://browser:8770')+'/search',json={'queries':[{'name':name,'budget':budget} for name,budget in queries]})
+        with httpx.Client(timeout=client_budget(len(queries)),trust_env=False) as client:
+            response=client.post(os.environ.get('LEBONCOIN_BROWSER_URL','http://browser:8770')+'/search',json={'queries':[{'name':name,'budget':budget} for name,budget in queries],'pages':MAX_PAGES})
             if response.status_code!=200:return Outcome('error','Internal browser service unavailable or rejected input.',[])
             payload=response.json()
         status=payload.get('status')
@@ -270,6 +272,6 @@ def check_leboncoin(queries=None):
         if status!='experimental':return Outcome(status,payload.get('message','Browser check failed.'),[],int(payload.get('retry_after',300)))
         budget=max(b for _,b in queries)
         listings={l.external_id:l for l in parse_leboncoin(payload.get('items')) if l.item_cents<=budget}
-        return Outcome('experimental',f'{len(listings)} browser listings from cheapest + newest searches. Item prices; game-name matching applies.',list(listings.values()))
+        return Outcome('experimental',f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched, up to {MAX_PAGES} per cheapest/newest search. Item prices; game-name matching applies.",list(listings.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except Exception:return Outcome('error','Leboncoin browser connection or parser failed. Existing listings preserved.',[])

@@ -57,7 +57,11 @@ def tick(now=None,checker=sources.check):
                 pending=set(tasks)
                 while pending:
                     done,pending=wait(pending,timeout=15,return_when=FIRST_COMPLETED)
-                    with db.connect() as conn:db.setting(conn,'worker_heartbeat',time.time() if realtime else now)
+                    with db.connect() as conn:
+                        heartbeat=time.time() if realtime else now
+                        db.setting(conn,'worker_heartbeat',heartbeat)
+                        # Pagination can outlive the initial leases; keep owned work exclusive.
+                        conn.execute('UPDATE leases SET until_at=? WHERE owner=?',(heartbeat+600,owner))
                     yield from done
             for future in completed():
                 source,interested,run_id=tasks[future]

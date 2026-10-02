@@ -8,7 +8,8 @@ from pathlib import Path
 import subprocess
 import threading
 import time
-from urllib.parse import urlencode
+from .leboncoin_pagination import search_url, PageTracker
+from .leboncoin_limits import MAX_PAGES, browser_budget
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
@@ -30,6 +31,7 @@ class Query(BaseModel):
 
 class Searches(BaseModel):
     queries: list[Query] = Field(min_length=1, max_length=4)
+    pages: int = Field(default=MAX_PAGES, ge=1, le=MAX_PAGES)
 
 
 @app.get('/health')
@@ -65,13 +67,14 @@ def search(request: Searches):
     run_id=uuid.uuid4().hex[:12]
     started=time.monotonic()
     phase='lock'
-    emit(run_id,'check_started',started,queries=len(request.queries))
+    emit(run_id,'check_started',started,queries=len(request.queries),pages_per_sort=request.pages)
     if not lock.acquire(blocking=False):
         emit(run_id,'busy',started)
         return {'status': 'error', 'message': 'Browser is busy; retry later.', 'items': [], 'retry_after': 300}
     try:
         items = {}
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + browser_budget(len(request.queries),request.pages)
+        coverage = []
         phase='launch'
         with sync_playwright() as p, ExitStack() as sessions:
             mode=os.environ.get('LEBONCOIN_PROFILE_MODE','persistent')
@@ -93,69 +96,74 @@ def search(request: Searches):
                             emit(run_id,'profile_loaded',started,persistent=mode=='persistent',query_index=query_index,sort=sort,cookie_count=len(context.cookies()))
                             emit(run_id,'browser_ready',started,launch_mode=os.environ.get('LEBONCOIN_BROWSER_MODE','normal'),version=context.browser.version,display_ready=Path('/tmp/.X11-unix/X99').exists())
                             page=context.pages[0] if context.pages else context.new_page()
-                        params = urlencode({'text': query.name, 'price': f'min-{(query.budget + 99) // 100}',
-                                            'sort': sort, 'order': order})
-                        phase='navigation'
-                        delay=random.SystemRandom().randint(1200,2500)
-                        emit(run_id,'pacing_pause',started,stage='before_navigation',duration_ms=delay)
-                        page.wait_for_timeout(delay)
-                        response = page.goto('https://www.leboncoin.fr/recherche?' + params,
-                                             wait_until='domcontentloaded', timeout=15000)
-                        status = response.status if response else 0
-                        emit(run_id,'navigation_response',started,query_index=query_index,sort=sort,http_status=status,datadome_header_present=bool(response and any('datadome' in h for h in response.headers)))
-                        delay=random.SystemRandom().randint(8500,11500)
-                        emit(run_id,'pacing_pause',started,stage='page_settle',duration_ms=delay)
-                        page.wait_for_timeout(delay)
-                        phase='page_inspection'
-                        flags=classify_page(page.locator('body').inner_text(timeout=3000)[:20000],page.title(),[f.url for f in page.frames])
-                        emit(run_id,'page_inspected',started,**flags)
-                        challenge=inspect_challenge(page)
-                        enabled=os.environ.get('LEBONCOIN_INTERACTIVE_SOLVER')=='true'
-                        handler=choose_handler(challenge['challenge_kind'],enabled)
-                        emit(run_id,'challenge_classified',started,handler=handler,**challenge)
-                        if handler=='wait' and status!=429:
-                            phase='automatic_check'
-                            until=min(deadline,time.monotonic()+12)
-                            while time.monotonic()<until and challenge['challenge_blocking']:
-                                page.wait_for_timeout(750)
-                                challenge=inspect_challenge(page)
-                            handler=choose_handler(challenge['challenge_kind'],enabled)
-                            emit(run_id,'automatic_check_finished',started,handler=handler,**challenge)
-                            if not challenge['challenge_blocking'] and page.locator('a[href*="/ad/jeux_video/"]:visible').count():status=200
-                        if handler in ('slider','image_slider') and status!=429:
-                            phase='interactive_challenge'
-                            solver=attempt_slide if handler=='slider' else attempt_image_slider
-                            outcome=solver(page,emit,run_id,started)
+                        tracker=PageTracker()
+                        for page_number in range(1,request.pages+1):
+                            if time.monotonic() >= deadline:
+                                emit(run_id,'deadline_exceeded',started,pages_fetched=len(coverage))
+                                return {'status':'error','message':f'Browser check exceeded time limit after {len(coverage)} pages; diagnostics {run_id}.','items':[],'coverage':coverage}
+                            phase='navigation'
+                            delay=random.SystemRandom().randint(1200,2500)
+                            emit(run_id,'pacing_pause',started,stage='before_navigation',duration_ms=delay)
+                            page.wait_for_timeout(delay)
+                            response = page.goto(search_url(query.name,query.budget,sort,order,page_number),
+                                                 wait_until='domcontentloaded', timeout=15000)
+                            status = response.status if response else 0
+                            emit(run_id,'navigation_response',started,query_index=query_index,sort=sort,page_number=page_number,http_status=status,datadome_header_present=bool(response and any('datadome' in h for h in response.headers)))
+                            delay=random.SystemRandom().randint(8500,11500)
+                            emit(run_id,'pacing_pause',started,stage='page_settle',duration_ms=delay)
+                            page.wait_for_timeout(delay)
+                            phase='page_inspection'
+                            flags=classify_page(page.locator('body').inner_text(timeout=3000)[:20000],page.title(),[f.url for f in page.frames])
+                            emit(run_id,'page_inspected',started,**flags)
                             challenge=inspect_challenge(page)
-                            emit(run_id,'interactive_outcome',started,outcome=outcome,**challenge)
-                            if outcome=='access_confirmed':status=200
-                        if status in (401, 403, 429):
-                            return {'status': 'rate-limited' if status == 429 else 'blocked',
-                                    'message': f"Leboncoin returned HTTP {status}; challenge {challenge['challenge_kind']}, handler {handler}; diagnostics {run_id}.",
-                                    'retry_after': 86400 if status != 429 else 3600, 'items': []}
-                        if status != 200:
-                            return {'status': 'error', 'message': f'Leboncoin returned HTTP {status}.', 'items': []}
-                        if challenge['challenge_blocking']:
-                            return {'status':'blocked','message':f"Challenge {challenge['challenge_kind']}; handler {handler}; diagnostics {run_id}.",'items':[],'retry_after':86400}
-                        phase='extraction'
-                        selector = 'a[href*="/ad/jeux_video/"]'
-                        try:
-                            page.locator(selector).first.wait_for(timeout=8000)
-                        except Exception:
-                            text = page.locator('body').inner_text().lower()
-                            flags=classify_page(text,page.title(),[f.url for f in page.frames])
-                            emit(run_id,'cards_missing',started,**flags)
-                            if not flags['empty_search_detected']:
-                                return {'status': 'error', 'message': f'No cards or confirmed empty search; diagnostics {run_id}; needs review.', 'items': []}
-                        rows = page.locator(selector).evaluate_all("""links => links.slice(0,35).map(a => ({
-                            url:a.href, text:(a.closest('article')?.innerText || '').slice(0,5000)
-                        }))""")
-                        emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,count=len(rows))
-                        for row in rows:
-                            items[row['url']] = row
-                emit(run_id,'check_completed',started,unique_cards=len(items))
-                return {'status': 'experimental', 'message': 'Cheapest + newest rendered search cards.',
-                        'items': list(items.values())}
+                            enabled=os.environ.get('LEBONCOIN_INTERACTIVE_SOLVER')=='true'
+                            handler=choose_handler(challenge['challenge_kind'],enabled)
+                            emit(run_id,'challenge_classified',started,handler=handler,**challenge)
+                            if handler=='wait' and status!=429:
+                                phase='automatic_check'
+                                until=min(deadline,time.monotonic()+12)
+                                while time.monotonic()<until and challenge['challenge_blocking']:
+                                    page.wait_for_timeout(750)
+                                    challenge=inspect_challenge(page)
+                                handler=choose_handler(challenge['challenge_kind'],enabled)
+                                emit(run_id,'automatic_check_finished',started,handler=handler,**challenge)
+                                if not challenge['challenge_blocking'] and page.locator('a[href*="/ad/jeux_video/"]:visible').count():status=200
+                            if handler in ('slider','image_slider') and status!=429:
+                                phase='interactive_challenge'
+                                solver=attempt_slide if handler=='slider' else attempt_image_slider
+                                outcome=solver(page,emit,run_id,started)
+                                challenge=inspect_challenge(page)
+                                emit(run_id,'interactive_outcome',started,outcome=outcome,**challenge)
+                                if outcome=='access_confirmed':status=200
+                            if status in (401, 403, 429):
+                                return {'status': 'rate-limited' if status == 429 else 'blocked',
+                                        'message': f"Leboncoin returned HTTP {status}; challenge {challenge['challenge_kind']}, handler {handler}; diagnostics {run_id}.",
+                                        'retry_after': 86400 if status != 429 else 3600, 'items': []}
+                            if status != 200:
+                                return {'status': 'error', 'message': f'Leboncoin returned HTTP {status}.', 'items': []}
+                            if challenge['challenge_blocking']:
+                                return {'status':'blocked','message':f"Challenge {challenge['challenge_kind']}; handler {handler}; diagnostics {run_id}.",'items':[],'retry_after':86400}
+                            phase='extraction'
+                            selector = 'a[href*="/ad/jeux_video/"]'
+                            try:
+                                page.locator(selector).first.wait_for(timeout=8000)
+                            except Exception:
+                                text = page.locator('body').inner_text().lower()
+                                flags=classify_page(text,page.title(),[f.url for f in page.frames])
+                                emit(run_id,'cards_missing',started,**flags)
+                                if not flags['empty_search_detected']:
+                                    return {'status': 'error', 'message': f'No cards or confirmed empty search; diagnostics {run_id}; needs review.', 'items': []}
+                            rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => ({
+                                url:a.href, text:(a.closest('article')?.innerText || '').slice(0,5000)
+                            }))""")
+                            emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,page_number=page_number,count=len(rows))
+                            reason=tracker.collect(rows,items)
+                            coverage.append({'query_index':query_index,'sort':sort,'page':page_number,'cards':len(rows),'stop':reason})
+                            emit(run_id,'pagination_page',started,**coverage[-1],unique_cards=len(items))
+                            if reason:break
+                emit(run_id,'check_completed',started,unique_cards=len(items),pages_fetched=len(coverage))
+                return {'status': 'experimental', 'message': f'Cheapest + newest: {len(coverage)} pages fetched, up to {request.pages} per search order.',
+                        'items': list(items.values()), 'coverage':coverage, 'pages_fetched':len(coverage), 'page_limit':request.pages}
             finally:
                 sessions.close()
                 emit(run_id,'profiles_closed',started,mode=mode,temporary_profiles_removed=mode=='fresh')

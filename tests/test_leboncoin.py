@@ -32,6 +32,8 @@ def test_browser_connection_payload_dedup_budget_and_block(monkeypatch):
 
     def respond(request):
         assert request.url.path == '/search'
+        import json
+        assert json.loads(request.content)['pages']==5
         return httpx.Response(200, json={'status': 'experimental', 'items': [card(), card(),
             card('Elden Ring PS5\nPrix: 60 €.', 'https://www.leboncoin.fr/ad/jeux_video/456')]})
 

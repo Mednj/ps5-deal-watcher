@@ -59,12 +59,12 @@ def test_notification_delay_excludes_quiet_hours():
 def test_stuck_check_dashboard_auth_and_retention(monkeypatch):
     now=1000000;heartbeat(now)
     with db.connect() as c:
-        c.execute("INSERT INTO runs(source,started_at,status) VALUES('leboncoin',?,'running')",(now-181,))
+        c.execute("INSERT INTO runs(source,started_at,status) VALUES('vinted',?,'running')",(now-181,))
         c.execute("INSERT INTO monitor_samples VALUES(0,'{}')")
     monitoring.tick(now,{'web':True,'browser':True},sender=lambda *a:(True,'ok',0))
     with db.connect() as c:
         assert c.execute('SELECT count(*) FROM monitor_samples').fetchone()[0]==1
-        assert c.execute("SELECT active FROM monitor_incidents WHERE key='stuck:leboncoin'").fetchone()[0]==1
+        assert c.execute("SELECT active FROM monitor_incidents WHERE key='stuck:vinted'").fetchone()[0]==1
     with TestClient(app) as client:
         assert 'Source performance' in client.get('/monitoring').text
         monkeypatch.setenv('APP_PASSWORD_HASH','enabled')
@@ -81,3 +81,14 @@ def test_worker_recovers_interrupted_run_without_losing_delivery_lease():
         assert c.execute('SELECT status FROM runs').fetchone()[0]=='interrupted'
         assert [r['name'] for r in c.execute('SELECT name FROM leases')]==['delivery']
         assert db.settings(c)['manual_check_requested']=='1'
+
+def test_paginated_check_uses_longer_monitor_budget():
+    from app.sources import CHECK_TIMEOUT
+    now=1000000;heartbeat(now)
+    with db.connect() as c:
+        c.execute("INSERT INTO runs(source,started_at,status) VALUES('leboncoin',?,'running')",(now-200,))
+        _,problems=monitoring.snapshot(c,now,{'web':True,'browser':True})
+        assert 'stuck:leboncoin' not in problems
+        c.execute('UPDATE runs SET started_at=?',(now-CHECK_TIMEOUT['leboncoin']-1,))
+        _,problems=monitoring.snapshot(c,now,{'web':True,'browser':True})
+        assert 'stuck:leboncoin' in problems

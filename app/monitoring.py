@@ -4,7 +4,7 @@ import os
 import signal
 import time
 import httpx
-from . import db, service
+from . import db, service, sources
 from .matching import eligible, quiet, match
 from .models import Watch, Listing
 
@@ -41,7 +41,9 @@ def snapshot(conn, now, health):
                 and not any(r['ended_at'] is None for r in runs)):
             problems['schedule:'+source['id']]=f"{source['id'].title()}: scheduled check overdue by over 10 minutes"
     for run in conn.execute("SELECT * FROM runs WHERE ended_at IS NULL AND started_at<?",(now-180,)):
-        problems['stuck:'+run['source']]=f"{run['source'].title()} check exceeds 180-second budget"
+        budget=sources.CHECK_TIMEOUT.get(run['source'],180)
+        if now-run['started_at']>budget:
+            problems['stuck:'+run['source']]=f"{run['source'].title()} check exceeds {budget}-second budget"
     overdue=0
     eligible_ids=set()
     rows=conn.execute("SELECT e.*, w.data watch, l.data listing, l.last_at FROM events e JOIN watches w ON w.id=e.watch_id JOIN listings l ON l.id=e.listing_id WHERE e.state IN ('pending','sending')").fetchall()
