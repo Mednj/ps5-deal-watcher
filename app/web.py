@@ -161,7 +161,7 @@ def timestamp(value,zone):
 
 def watch_from_form(data):
     zone=str(data.get('timezone','Europe/Paris'))
-    return Watch(name=data['name'],aliases=[s.strip() for s in str(data.get('aliases','')).split(',') if s.strip()],excluded=[s.strip() for s in str(data.get('excluded','')).split(',') if s.strip()],edition=str(data.get('edition','')),language=str(data.get('language','')),max_cents=cents(str(data['budget'])),basis=data['basis'],condition=data['condition'],sources=data.getlist('sources'),delivery='delivery' in data,pickup='pickup' in data,centres=data.getlist('centres'),radius_km=int(data['radius_km']),interval_minutes=int(data['interval_minutes']),timezone=zone,start_at=timestamp(str(data.get('start_at','')),zone),end_at=timestamp(str(data.get('end_at','')),zone),checking_start=data['checking_start'],checking_end=data['checking_end'],ps4_upgrade='ps4_upgrade' in data,bundles='bundles' in data,notify_drops='notify_drops' in data,active='active' in data)
+    return Watch(qualification=str(data.get('qualification','name-price')),name=data['name'],aliases=[s.strip() for s in str(data.get('aliases','')).split(',') if s.strip()],excluded=[s.strip() for s in str(data.get('excluded','')).split(',') if s.strip()],edition=str(data.get('edition','')),language=str(data.get('language','')),max_cents=cents(str(data['budget'])),basis=data['basis'],condition=data['condition'],sources=data.getlist('sources'),delivery='delivery' in data,pickup='pickup' in data,centres=data.getlist('centres'),radius_km=int(data['radius_km']),interval_minutes=int(data['interval_minutes']),timezone=zone,start_at=timestamp(str(data.get('start_at','')),zone),end_at=timestamp(str(data.get('end_at','')),zone),checking_start=data['checking_start'],checking_end=data['checking_end'],ps4_upgrade='ps4_upgrade' in data,bundles='bundles' in data,notify_drops='notify_drops' in data,active='active' in data)
 
 @app.post('/watches/save')
 async def save_watch(request:Request):
@@ -202,11 +202,12 @@ async def watch_action(request:Request,watch_id:int,action:str):
 async def check_now(request:Request):
     await form(request);now=time.time()
     with db.connect() as conn:
-        last=float(db.settings(conn).get('last_manual_check',0))
-        if now-last<60:return redirect('/activity','Check now is limited to once per minute.')
+        config=db.settings(conn)
+        if config.get('manual_check_running')=='1' or config.get('manual_check_requested')=='1':
+            return redirect('/activity','An immediate check is already running or queued.')
         db.setting(conn,'last_manual_check',now)
-        conn.execute('UPDATE watches SET next_at=?',(now,))
-    return redirect('/activity','Check requested. Source cooldowns, watch dates and checking hours still apply.')
+        db.setting(conn,'manual_check_requested',1)
+    return redirect('/activity','Immediate check requested across all selected sources. Checking hours and source cooldowns are bypassed for this pass.')
 
 @app.get('/deals')
 def deals(request:Request):
@@ -263,7 +264,7 @@ async def settings_save(request:Request):
     try:
         zone=str(data['timezone']);ZoneInfo(zone)
         interval=int(data['default_interval']);retention=int(data['retention_days'])
-        if not 15<=interval<=10080 or not 7<=retention<=3650:raise ValueError()
+        if not 5<=interval<=10080 or not 7<=retention<=3650:raise ValueError()
         start=str(data.get('quiet_start',''));end=str(data.get('quiet_end',''))
         if bool(start)!=bool(end):raise ValueError()
         for value in (start,end):
@@ -308,3 +309,9 @@ async def import_listing(request:Request):
         listing_id=db.put_listing(conn,listing,now)
         for row in conn.execute('SELECT * FROM watches').fetchall():service.evaluate(conn,row['id'],Watch.model_validate_json(row['data']),listing_id,listing,now)
     return redirect('/deals','Listing saved and matched. Manual entries are not automatic source monitoring.')
+
+@app.get('/monitoring')
+def monitoring_page(request:Request):
+    auth(request)
+    from .monitoring import dashboard
+    return render(request,'monitoring.html',**dashboard())

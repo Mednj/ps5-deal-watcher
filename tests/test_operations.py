@@ -24,7 +24,7 @@ def test_single_password_auth(monkeypatch):
 def test_manual_listing_flow_and_alert_outbox():
     with TestClient(app) as client:
         token=re.search(r'name="csrf" value="([^"]+)"',client.get('/watches/new').text).group(1)
-        watch_form=dict(csrf=token,name="Demon's Souls",budget='16',basis='all-in',condition='any',sources=['dealabs'],delivery='on',radius_km='25',interval_minutes='60',timezone='Europe/Paris',checking_start='00:00',checking_end='00:00',active='on',notify_drops='on')
+        watch_form=dict(csrf=token,name="Demon's Souls",budget='16',qualification='strict',basis='all-in',condition='any',sources=['dealabs'],delivery='on',radius_km='25',interval_minutes='60',timezone='Europe/Paris',checking_start='00:00',checking_end='00:00',active='on',notify_drops='on')
         assert client.post('/watches/save',data=watch_form).status_code==200
         listing_form=dict(csrf=token,source='dealabs',url='https://www.dealabs.com/bons-plans/demons-souls-123',title="Demon's Souls PS5 disc",item_price='12',shipping='3',fees='1',delivery='on',condition='used',platform='ps5',physical='yes',price_kind='exact')
         response=client.post('/import',data=listing_form)
@@ -36,7 +36,7 @@ def test_manual_listing_flow_and_alert_outbox():
 
 def test_cancelled_unsent_event_can_be_requeued():
     now=time.time()
-    watch=Watch(name="Demon's Souls",max_cents=1600)
+    watch=Watch(qualification='strict',name="Demon's Souls",max_cents=1600)
     listing=Listing(source='dealabs',external_id='x',url='https://www.dealabs.com/bons-plans/game-123',title="Demon's Souls PS5 disc",item_cents=1200,shipping_cents=300,fees_cents=100,delivery=True,physical=True,platform='ps5')
     with db.connect() as conn:
         conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(watch.model_dump_json(),now,now))

@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from . import db
-from .matching import match, eligible, quiet
+from .matching import match, eligible, quiet, manual_check
 from .models import Listing, Watch
 
 def money(value):
@@ -18,7 +18,7 @@ def notification(watch,listing,result):
     return (f'PS5 Deal Watcher · {watch.name}\n{listing.title}\nSource: {listing.source}\n'
             f'Item: {money(listing.item_cents)} · Shipping: {money(listing.shipping_cents)}\n'
             f'Delivery fees: {money(listing.fees_cents)} · Pickup fees: {money(listing.pickup_fees_cents)}\n'
-            f'{watch.basis} {result.route} price: {money(result.total)}\n'
+            f"{'Advertised item' if watch.qualification=='name-price' else watch.basis+' '+result.route} price: {money(result.total)}\n"
             f'Condition: {listing.condition} · Location: {listing.location or "Not supplied"}\n'
             f'{result.reason}\n{listing.url}')[:4000]
 
@@ -30,8 +30,13 @@ def evaluate(conn,watch_id,watch,listing_id,listing,now):
     prev=conn.execute('SELECT lowest_cents FROM notified WHERE watch_id=? AND listing_id=?',(watch_id,listing_id)).fetchone()
     pending=conn.execute("SELECT MIN(price_cents) price FROM events WHERE watch_id=? AND listing_id=? AND state != 'cancelled'",(watch_id,listing_id)).fetchone()['price']
     lowest=min([p for p in [prev['lowest_cents'] if prev else None,pending] if p is not None], default=None)
-    if lowest is not None and (not watch.notify_drops or result.total>=lowest):return result
+    if lowest is not None and (not watch.notify_drops or result.total>=lowest):
+        if manual_check.get():
+            conn.execute("UPDATE events SET manual=1 WHERE watch_id=? AND listing_id=? AND price_cents=? AND state='pending'",(watch_id,listing_id,result.total))
+        return result
     conn.execute("INSERT INTO events(watch_id,listing_id,price_cents,next_at,created_at,message) VALUES(?,?,?,?,?,?) ON CONFLICT(watch_id,listing_id,price_cents) DO UPDATE SET state='pending',next_at=excluded.next_at,message=excluded.message,last_error='' WHERE events.state='cancelled'",(watch_id,listing_id,result.total,now,now,notification(watch,listing,result)))
+    if manual_check.get():
+        conn.execute("UPDATE events SET manual=1 WHERE watch_id=? AND listing_id=? AND price_cents=? AND state='pending'",(watch_id,listing_id,result.total))
     return result
 
 def reevaluate_watch(conn,watch_id,now):
@@ -79,7 +84,7 @@ def deliver(now=None,sender=send_telegram):
                 watch=Watch.model_validate_json(w['data']); listing=Listing.model_validate_json(l['data'])
                 if not watch.active or (watch.end_at is not None and now>=watch.end_at):
                     conn.execute("UPDATE events SET state='cancelled',last_error='Watch paused or expired.' WHERE id=?",(event['id'],));continue
-                if not eligible(watch,now):continue
+                if not eligible(watch,now,allow_manual=False) and not event['manual']:continue
                 result=match(watch,listing)
                 previous=conn.execute('SELECT lowest_cents FROM notified WHERE watch_id=? AND listing_id=?',(event['watch_id'],event['listing_id'])).fetchone()
                 if result.state!='qualified' or result.total!=event['price_cents'] or (previous and event['price_cents']>=previous['lowest_cents']):

@@ -1,6 +1,7 @@
-"""Bounded public adapters. Never use source logins, private APIs or browser evasion."""
+"""Bounded public adapters. Anonymous experimental catalogue access; no source logins or browser evasion."""
 from dataclasses import dataclass
 from decimal import Decimal
+import os
 import html
 import json
 import re
@@ -17,8 +18,10 @@ from .matching import normalize, phrase
 
 AGENT = 'PS5DealWatcher/0.1 (personal public-feed reader)'
 URLS = {'dealabs':'https://www.dealabs.com/rss/groupe/jeux-playstation-5',
-        'easycash':'https://bons-plans.easycash.fr/jeux-video/sony/ps5'}
-MIN_INTERVAL = {'dealabs':3600, 'easycash':14400, 'leboncoin':3600, 'vinted':3600}
+        'easycash':'https://bons-plans.easycash.fr/jeux-video/sony/ps5',
+        'vinted':'https://www.vinted.fr/',
+        'leboncoin':'https://www.leboncoin.fr/'}
+MIN_INTERVAL = {'dealabs':300, 'easycash':14400, 'leboncoin':300, 'vinted':300}
 
 @dataclass
 class Outcome:
@@ -129,6 +132,8 @@ def parse_easycash(body):
     return results
 
 def check(source):
+    if source=='leboncoin':return check_leboncoin()
+    if source=='vinted':return check_vinted()
     if source not in URLS:
         return Outcome('blocked','Direct monitoring restricted. Use native saved searches and manual entry.',[])
     try:
@@ -143,3 +148,128 @@ def check(source):
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except httpx.HTTPError:return Outcome('error','Network timeout or connection error. Existing listings preserved.',[])
     except Exception:return Outcome('error','Unexpected adapter/parser failure. Existing listings preserved.',[])
+
+
+def vinted_response(client, url, **kwargs):
+    # Fixed endpoints, bounded bodies and no redirects. Never retry access denials.
+    with client.stream('GET', url, **kwargs) as response:
+        if response.status_code in (401,403):
+            raise FetchError('blocked','Vinted denied anonymous access. No bypass attempted.',86400)
+        if response.status_code==429:
+            from email.utils import parsedate_to_datetime
+            value=response.headers.get('retry-after','300')
+            try: retry=int(value)
+            except ValueError:
+                try: retry=int(parsedate_to_datetime(value).timestamp()-time.time())
+                except Exception: retry=300
+            raise FetchError('rate-limited','Vinted rate limited checks; waiting before retry.',max(60,min(retry,86400)))
+        if response.status_code!=200:
+            raise FetchError('error',f'Vinted returned HTTP {response.status_code}.')
+        body=bytearray()
+        for chunk in response.iter_bytes():
+            body.extend(chunk)
+            if len(body)>4_000_000:raise FetchError('error','Vinted response exceeded download limit.')
+        return bytes(body)
+
+
+def parse_vinted(body):
+    try: payload=json.loads(body)
+    except (ValueError,TypeError):raise FetchError('error','Vinted returned invalid JSON or a challenge page.')
+    if not isinstance(payload,dict) or not isinstance(payload.get('items'),list):
+        raise FetchError('error','Vinted catalogue schema changed; expected items list.')
+    results=[]
+    for item in payload['items'][:24]:
+        if not isinstance(item,dict):continue
+        try:
+            price=item.get('price') or {}
+            if price.get('currency_code')!='EUR':continue
+            title=str(item['title']);text=normalize(title)
+            platform='ps5' if re.search(r'\bps5\b|\bplaystation 5\b',text) else 'unknown'
+            if platform=='unknown' and re.search(r'\bps4\b|\bxbox\b|\bpc\b|\bswitch\b',text):platform='other'
+            # Catalogue titles alone do not establish a physical disc or delivery eligibility.
+            unavailable=bool(item.get('is_closed') or item.get('is_reserved') or item.get('is_sold'))
+            results.append(Listing(source='vinted',external_id=str(item['id']),url=urljoin('https://www.vinted.fr/',str(item['url'])),title=title,item_cents=cents(str(price['amount'])),platform=platform,physical=None,delivery=None,availability='unavailable' if unavailable else 'unverified',provenance='experimental anonymous Vinted catalogue',description='Item price only. Disc, edition, delivery, buyer protection and shipping must be confirmed on Vinted. Pickup location unknown.'))
+        except (ValueError,TypeError,KeyError,AttributeError):continue
+    if payload['items'] and not results:raise FetchError('error','Vinted entries could not be parsed; adapter needs review.')
+    return results
+
+
+def check_vinted(queries=None):
+    try:
+        if queries is None:
+            from . import db
+            from .models import Watch
+            from .matching import eligible
+            grouped={}
+            with db.connect() as conn:
+                for row in conn.execute('SELECT data FROM watches ORDER BY id'):
+                    watch=Watch.model_validate_json(row['data'])
+                    if 'vinted' not in watch.sources or not eligible(watch,time.time()):continue
+                    for name in [watch.name,*watch.aliases]:
+                        query=name+' PS5'
+                        grouped[query]=max(grouped.get(query,0),watch.max_cents)
+            queries=list(grouped.items())
+        if not queries:return Outcome('experimental','No active Vinted watches to search.',[])
+        if len(queries)>8:return Outcome('error','Vinted supports at most 8 distinct active game/alias searches. Reduce searches to avoid partial coverage.',[])
+        results={}
+        with httpx.Client(timeout=httpx.Timeout(20,connect=8),follow_redirects=False,trust_env=False,headers={'User-Agent':AGENT,'Accept-Language':'fr-FR'}) as client:
+            vinted_response(client,'https://www.vinted.fr/')
+            headers={'Accept':'application/json','Platform':'web','x-next-app':'marketplace-web','Origin':'https://www.vinted.fr','Referer':'https://www.vinted.fr/','Locale':'fr-FR'}
+            anon=client.cookies.get('anon_id')
+            if anon:headers['X-Anon-Id']=anon
+            for name,budget in queries:
+                for order in ('price_low_to_high','newest_first'):
+                    params={'page':1,'per_page':24,'search_text':name,'order':order,'price_to':format(Decimal(budget)/100,'.2f'),'currency':'EUR'}
+                    body=vinted_response(client,'https://api.vinted.fr/svc-catalogue/items',params=params,headers=headers)
+                    for listing in parse_vinted(body):
+                        if listing.item_cents<=budget:results[listing.external_id]=listing
+        return Outcome('experimental',f'{len(results)} catalogue listings from {len(queries)} searches (cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.',list(results.values()))
+    except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
+    except httpx.HTTPError:return Outcome('error','Vinted network timeout or connection error. Existing listings preserved.',[])
+    except Exception:return Outcome('error','Vinted adapter/parser failed. Existing listings preserved.',[])
+
+
+def parse_leboncoin(items):
+    if not isinstance(items,list):raise FetchError('error','Browser returned invalid listing schema.')
+    results=[]
+    for item in items:
+        try:
+            text=item['text'];title=text.split('\n',1)[0].strip()
+            found=re.search(r'Prix:\s*([0-9]+(?:[,.][0-9]{1,2})?)\s*€',text)
+            if not found:continue
+            url=item['url'];platform='ps5' if re.search(r'\bps5\b|\bplaystation 5\b',normalize(title)) else 'unknown'
+            unavailable=any(phrase(term,text) for term in ['achat en cours','vendu','annonce expirée'])
+            results.append(Listing(source='leboncoin',external_id=urlsplit(url).path.rsplit('/',1)[-1],url=url,title=title,description=text[:5000],item_cents=cents(found.group(1)),platform=platform,physical=None,delivery=True if phrase('livraison',text) else None,availability='unavailable' if unavailable else 'unverified',provenance='experimental headed browser search cards'))
+        except (KeyError,TypeError,ValueError,AttributeError):continue
+    if items and not results:raise FetchError('error','No advertised item prices parsed; browser cards need review.')
+    return results
+
+
+def check_leboncoin(queries=None):
+    try:
+        if queries is None:
+            from . import db
+            from .models import Watch
+            from .matching import eligible
+            grouped={}
+            with db.connect() as conn:
+                for row in conn.execute('SELECT data FROM watches ORDER BY id'):
+                    watch=Watch.model_validate_json(row['data'])
+                    if 'leboncoin' not in watch.sources or not eligible(watch,time.time()):continue
+                    for name in [watch.name,*watch.aliases]:
+                        query=name+' PS5';grouped[query]=max(grouped.get(query,0),watch.max_cents)
+            queries=list(grouped.items())
+        if not queries:return Outcome('experimental','No active Leboncoin watches to search.',[])
+        if len(queries)>4:return Outcome('error','Leboncoin supports at most 4 distinct active game/alias searches.',[])
+        with httpx.Client(timeout=150,trust_env=False) as client:
+            response=client.post(os.environ.get('LEBONCOIN_BROWSER_URL','http://browser:8770')+'/search',json={'queries':[{'name':name,'budget':budget} for name,budget in queries]})
+            if response.status_code!=200:return Outcome('error','Internal browser service unavailable or rejected input.',[])
+            payload=response.json()
+        status=payload.get('status')
+        if status not in ('experimental','blocked','rate-limited','error'):raise FetchError('error','Browser returned invalid status.')
+        if status!='experimental':return Outcome(status,payload.get('message','Browser check failed.'),[],int(payload.get('retry_after',300)))
+        budget=max(b for _,b in queries)
+        listings={l.external_id:l for l in parse_leboncoin(payload.get('items')) if l.item_cents<=budget}
+        return Outcome('experimental',f'{len(listings)} browser listings from cheapest + newest searches. Item prices; game-name matching applies.',list(listings.values()))
+    except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
+    except Exception:return Outcome('error','Leboncoin browser connection or parser failed. Existing listings preserved.',[])

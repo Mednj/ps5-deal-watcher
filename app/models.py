@@ -36,6 +36,7 @@ class Watch(BaseModel):
     language: str = Field(default='', max_length=60)
     excluded: list[str] = Field(default_factory=list, max_length=30)
     max_cents: int = Field(ge=1, le=10000000)
+    qualification: Literal['name-price', 'strict'] = 'name-price'
     basis: Literal['all-in', 'item'] = 'all-in'
     condition: Literal['any', 'new', 'used'] = 'any'
     sources: list[str] = Field(default_factory=lambda: list(SOURCES), min_length=1)
@@ -43,7 +44,7 @@ class Watch(BaseModel):
     pickup: bool = True
     centres: list[str] = Field(default_factory=lambda: list(CENTRES))
     radius_km: int = Field(default=25, ge=1, le=500)
-    interval_minutes: int = Field(default=60, ge=15, le=10080)
+    interval_minutes: int = Field(default=5, ge=5, le=10080)
     timezone: str = 'Europe/Paris'
     start_at: float | None = None
     end_at: float | None = None

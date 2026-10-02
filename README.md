@@ -29,8 +29,8 @@ The default port binds only to this PC's loopback address. There is no elaborate
 | --- | --- | --- |
 | Dealabs | Public PS5 RSS, verified live from the local Docker environment | Recent feed entries, usually 20–30 items, not an exhaustive search. Disc, shipping, fees, edition and stock often need review. |
 | Easy Cash | Experimental public catalogue parser; disabled by default | First page only, currently 30 references. Aggregate “from” prices stay candidates and cannot trigger alerts. No private offer endpoint is fetched. |
-| Leboncoin | Native search/manual entry fallback | Direct collection restricted by current terms/robots. No automatic fetching or alert ingestion. |
-| Vinted | Native search/manual entry fallback | Terms restrict scraping. The supplied category includes several platforms, not just PS5. No automatic fetching or alert ingestion. |
+| Leboncoin | Experimental headed Chromium service in Docker | Cheapest + newest first-page searches. Up to 4 game/alias queries. Disabled by default; no long-term reliability guarantee. |
+| Vinted | Experimental anonymous catalogue searches for configured games | First 24 cheapest plus 24 newest results per game/alias, deduplicated, at most 8 searches. Item prices only; disc and delivery costs require review. Disabled by default. |
 
 See [SOURCES.md](SOURCES.md) for dated evidence and tested methods. Feed access does **not** guarantee a qualifying all-in alert: incomplete prices and formats deliberately stay candidates. The app does not infer zero fees from silence. A manually entered real offer with confirmed costs and format can qualify and trigger Telegram.
 
@@ -44,7 +44,7 @@ Email/native-alert ingestion is not implemented in this version. No source crede
 - Titles normalize case, accents, apostrophes and punctuation. Wrong sequel numbers, digital/account/accessory/empty-case titles are excluded. Extra subtitle wording and uncertain disc/edition details need review. Matching is intentionally conservative and can need explicit aliases.
 - Pickup is a geographic radius from Lyon centre (45.7640, 4.8357) and/or Mantes-la-Jolie centre (48.9900, 1.7160). No geocoder sends your location elsewhere. A manually recorded listing needs coordinates for confident pickup qualification.
 - Each watch has start/end times, checking hours and an IANA timezone. Equal checking-hour boundaries mean all day. Spring DST times that do not exist are rejected. Ambiguous autumn times use the first occurrence.
-- Hourly watch checks by default. Source fetch minimums are 60 minutes for Dealabs and 4 hours for Easy Cash; these are conservative app limits, not published permission or guaranteed quotas. Shared source checks serve all due watches. Check now respects limits, dates, pauses and checking hours.
+- Five-minute watch checks by default. Source fetch minimums are 5 minutes for Dealabs, Vinted and Leboncoin and 4 hours for Easy Cash; these are conservative app limits, not published permission or guaranteed quotas. Shared source checks serve all due watches. Check now respects limits, dates, pauses and checking hours.
 - Failed or partial checks never mark existing offers as sold. Availability remains explicitly unverified or source-reported.
 
 ## Telegram
@@ -146,3 +146,45 @@ python -m app.worker
 ```
 
 Set `DATA_DIR` to a private writable directory if needed. Production does not run test fixtures or demo seed data.
+
+Alert qualification defaults to game name (or explicit alias) plus advertised item price. Platform, physical format, edition, delivery and fees are displayed but do not block alerts. Source selection, availability, schedule and deduplication still apply. Detailed filters and evidence mode remains available per watch.
+
+Leboncoin requires the additional internal `browser` Compose service (Chromium + Xvfb). It has no published port or access to the application data volume. Browser binaries increase image size and resource usage; reserve roughly 1 GB of RAM for evaluation. Local monitoring is experimental and may be blocked on another network.
+
+Leboncoin debugging: `docker compose logs --tail 100 browser`. Structured logs include a run ID, stage, elapsed time, Chromium version, HTTP status, anti-bot/consent flags and card counts. Credentials, cookies, search terms, full URLs and page contents are excluded. Source errors include the matching diagnostics ID.
+
+### Persistent Leboncoin session
+Browser cookies and profile are stored in the private browser-profile Docker volume, surviving container recreation. docker compose down -v deletes it. Do not distribute this volume. Automatic device checks get a bounded 12-second wait; interactive CAPTCHA solving is not implemented. Unresolved challenges remain blocked. Logs contain counts, never cookies.
+
+### Experimental interactive challenge handler
+Set LEBONCOIN_INTERACTIVE_SOLVER=true in your Compose environment to enable one attempt on the observed DataDome slide-to-end challenge. It uses the visible handle and target positions, then requires the challenge to disappear and visible listings to load. Unsupported challenge types are left blocked. No audio transcription or image-puzzle solver is implemented. Disabled by default because the live test moved the slider but resulted in Access is temporarily restricted, without listings. Persistent profile storage remains enabled.
+
+### Leboncoin profile mode
+LEBONCOIN_PROFILE_MODE defaults to fresh: each cheapest/newest search launches Chromium with its own temporary empty profile. The previous browser closes before the next search. Temporary profiles are removed on success and failure. Existing profiles in browser-profile remain preserved. Set LEBONCOIN_PROFILE_MODE=persistent to reuse /browser-data/profile instead. This applies only to Leboncoin. Fresh profiles have not demonstrated reliable access; challenges remain blocked.
+
+### Challenge classification and dispatch
+Leboncoin inspects challenge-frame visibility, frame content and visible controls. Detected types: slide_to_end, image_slider, image_puzzle, audio, device_check, restriction, hidden_frame and unknown. Hidden frames alone do not mark HTTP200 results blocked. Visible device checks get bounded waiting and reclassification; slide_to_end routes to the existing handler only when LEBONCOIN_INTERACTIVE_SOLVER=true. Restriction pages back off. Image and audio solvers are not implemented and are explicitly unsupported. Unrecognised visible challenges remain blocked. Classification is heuristic and can require refinement as site markup changes. Logs record type, confidence and handler without page content, tokens or URLs.
+
+### Experimental canvas image-slider solver
+Image-slider routing now supports a CPU-only silhouette matcher for readable same-sized background and transparent-piece canvases (maximum600x400). It estimates a dark gap using the piece boundary, rejects ambiguous matches, performs one drag and requires listings without the challenge before reporting success. No AI downloads or audio processing. It does not solve image-selection grids, rotations or arbitrary visual puzzles. Enabled with LEBONCOIN_INTERACTIVE_SOLVER=true; otherwise remains disabled. French simple slide-to-end prompts are recognised separately; page logos and zero-height canvases no longer count as image puzzles.
+
+### Live Docker browser viewer
+Open http://127.0.0.1:6080/vnc.html?autoconnect=true&resize=scale to watch the virtual display. The viewer is view-only and bound to host localhost. It is blank when no Chromium check is running; it is not a recording. No VNC port is published. BROWSER_VIEW_PORT can change the local port.
+
+### Current Leboncoin adapter: ordinary Chromium + CDP
+Compose now uses LEBONCOIN_BROWSER_MODE=normal and LEBONCOIN_PROFILE_MODE=persistent, with the dedicated private /browser-data/app-profile in the browser-profile volume. Chromium is started directly, allowed to load the homepage, then Playwright attaches through a dynamic loopback-only CDP port. The same context serves cheapest/newest and multiple game queries. Browser and owned subprocess are closed after each check; cookies are retained. The viewer remains localhost-only and view-only. Existing source interval, matching and Telegram deduplication still apply.
+
+This local installation was seeded by copying the successful manual/test session into the app profile; references were preserved. The deployment ZIP contains no cookies or profiles. A new server starts with an empty profile and needs its own validation: local success does not establish access on another server or IP.
+
+### Check now
+Check now queues an immediate parallel pass for active, unexpired watches across every source selected in those watches, including sources disabled for automatic polling. This pass bypasses checking hours, future start times, next-check schedules and source cooldowns. It retains watch configuration, pause/expiry rules, matching and notification deduplication. New alerts from the manual pass can be delivered outside checking hours; global Telegram quiet hours still apply. A running source check is not duplicated: repeated clicks coalesce, and a request made during an existing scheduler pass waits for that pass to finish. An idle worker wakes within about one second. Network checks take time to complete. Regular polling continues to respect the configured schedules and enabled sources.
+
+### Monitoring
+
+Compose includes an independent `monitor` service using the existing image, SQLite volume and Telegram credentials. It probes web readiness and browser health every 30 seconds, reads worker heartbeat, source runs and delivery attempts, and exposes the results in the dashboard's Monitoring tab at `/monitoring`. No additional marketplace requests, ports or credentials are required. Seven days of monitoring samples are retained; source and Telegram performance summaries cover the last 24 hours. Reload the page for updated data. Each container has its own Docker health check; Docker's restart policy restarts exited processes, not merely unhealthy containers.
+
+Web/browser/worker failures alert after three minutes of observed failure. Sources alert after three consecutive failed checks; active schedules overdue by ten minutes and checks running longer than 180 seconds also alert. Continuously eligible undelivered notifications alert after ten minutes, including retry backoff; watch hours, global quiet hours, stale observations and nonqualifying offers reset this timer. Monitoring alerts themselves bypass deal quiet hours. A successful zero-result search is healthy. One failure and one recovery message are sent per observed incident, with failed-send retries. Telegram confirmation is API acceptance, not proof the user read the message.
+
+The monitor is independent of the worker but shares the host and database. It cannot notify during a total host outage or a Telegram outage, and Docker/DB failure can stop monitoring too. Its sample timestamp and Docker health check identify a stalled monitor locally; external uptime monitoring needs another machine. Adapter success does not prove complete marketplace coverage. See `IMPROVEMENTS.md` for proposed resilience and accuracy work.
+
+Worker startup recovers orphaned running checks and scheduler/source leases. This deployment supports exactly one worker; do not scale replicas without implementing coordinated startup ownership. Existing delivery leases retain their timeout-based recovery.

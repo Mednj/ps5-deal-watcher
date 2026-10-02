@@ -17,7 +17,7 @@ def offer(**changes):
     data=listing().model_dump();data.update(changes);return Listing(**data)
 
 def watch(**changes):
-    data=dict(name="Demon's Souls",max_cents=1500);data.update(changes);return Watch(**data)
+    data=dict(name="Demon's Souls",max_cents=1500);data.update(changes);return Watch(qualification='strict',**data)
 
 def persist(w=None,l=None,now=NOW):
     w=w or watch(max_cents=1600);l=l or listing()
@@ -140,8 +140,8 @@ def test_offset_watch_reuses_shared_source_snapshot():
     worker.tick(NOW,lambda _:sources.Outcome('verified working','Fixture only',[real_listing]))
     later_watch=watch(max_cents=1700)
     with db.connect() as conn:
-        conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(later_watch.model_dump_json(),NOW+900,NOW+900))
-    worker.tick(NOW+900,lambda _:pytest.fail('Source should still be cooling down'))
+        conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(later_watch.model_dump_json(),NOW+150,NOW+150))
+    worker.tick(NOW+150,lambda _:pytest.fail('Source should still be cooling down'))
     with db.connect() as conn:
         assert conn.execute('SELECT count(*) FROM matches WHERE watch_id=2').fetchone()[0]==1
 

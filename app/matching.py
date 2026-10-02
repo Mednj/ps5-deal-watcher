@@ -1,4 +1,7 @@
 from dataclasses import dataclass
+from contextvars import ContextVar
+
+manual_check = ContextVar('manual_check', default=False)
 from datetime import datetime, timezone
 import math
 import re
@@ -22,7 +25,9 @@ def hours_contains(start, end, local):
     clock = local.strftime('%H:%M')
     return start <= clock < end if start < end else clock >= start or clock < end
 
-def eligible(watch: Watch, now):
+def eligible(watch: Watch, now, allow_manual=True):
+    if allow_manual and manual_check.get():
+        return watch.active and (watch.end_at is None or now < watch.end_at)
     return (watch.active and (watch.start_at is None or now >= watch.start_at)
             and (watch.end_at is None or now < watch.end_at)
             and hours_contains(watch.checking_start, watch.checking_end, datetime.fromtimestamp(now, ZoneInfo(watch.timezone))))
@@ -52,6 +57,12 @@ def match(watch: Watch, listing: Listing):
     name = next((name for name in [watch.name,*watch.aliases] if phrase(name,listing.title)), None)
     if not name:
         return Match('excluded','Game name or explicit alias not found in title.')
+    if watch.qualification == 'name-price':
+        if listing.availability == 'unavailable':
+            return Match('excluded','Source reports unavailable.')
+        if listing.item_cents > watch.max_cents:
+            return Match('over-budget','Advertised item price exceeds your budget.',listing.item_cents,'item')
+        return Match('qualified',f'Title matches {name}; advertised item price is within budget. Platform, disc, edition, delivery and fees are not qualification requirements.',listing.item_cents,'item')
     # Numbers and common subtitle/edition additions after the matched game need review.
     tail = title.split(normalize(name),1)[1].strip()
     if re.match(r'^(?:[0-9]+|ii|iii|iv|v|vi|vii|viii|ix|x)(?: |$)',tail):

@@ -10,26 +10,26 @@ Last verified: **2026-10-01**, Windows PC in France and local Docker Linux/amd64
 - Authentication: none. No documented public listing API integration was found/used.
 - Coverage: current feed window, capped at 100 parsed entries. No pagination or exhaustive historical lookup; no merchant stock revalidation. Terms/help documentation was inspected through the supplied group and [official help](https://help.dealabs.com/help/comment-fonctionne-dealabs); attempts at generic terms URLs were unsuccessful. No broader scraping permission is inferred from robots or feed access.
 - Costs: merchant price parsed in integer cents. Explicit free delivery or shipping amount is recorded; fees remain unknown unless explicitly stated. Disc format, condition and availability often remain unknown. Such entries are candidates, not confident alerts.
-- Rate limits: no published quota confirmed. App minimum is 60 minutes plus jitter; respects 429/Retry-After, timeout and circuit backoff.
+- Rate limits: no published quota confirmed. App minimum is 5 minutes plus jitter; respects 429/Retry-After, timeout and circuit backoff.
 - Fallback: native Dealabs alerts and manual listing entry.
 
-## Leboncoin — blocked for direct monitoring
+## Leboncoin — experimental headed Docker browser
 
-- [robots.txt](https://www.leboncoin.fr/robots.txt) returned HTTP 200 with an explicit restriction on automatic collection. The app does not crawl the supplied search route.
-- [Current terms](https://www.leboncoin.fr/dc/cgu), article 10.2, restrict robot-based collection without prior permission. This was readable through the web research tool; a local GET returned HTTP 403. No access denial was bypassed.
-- Method: no automated adapter. UI links to the supplied public category for the user to configure native searches. Manual recording of an offer does not fetch its URL.
-- Authentication: the user's own account may be needed for native saved searches; the app never asks for Leboncoin credentials.
-- Coverage/rate limits: no direct polling, therefore no automated coverage or quota claim. No authorized public API integration identified.
-- Fallback: native saved-search alerts; manually add a listing with prices, format and delivery/pickup evidence. Email alert ingestion is not implemented.
+- Dedicated internal browser service runs normal headed Chromium with Xvfb. No source credentials, proxy rotation, stealth patches or CAPTCHA solving. The browser's sandbox remains enabled; no public port or data volume is exposed.
+- Active game/alias searches append PS5, use advertised-item budgets, and fetch first-page cheapest and newest listings (up to 35 cards each), deduplicated by listing ID. Maximum 4 distinct searches per check; 5-minute source minimum.
+- Parses displayed card title, advertised item price and URL. Fees/disc remain unknown; source-reported purchase-in-progress listings are unavailable. Name + price mode can still match exchanges, empty cases or related games; inspect alerts.
+- HTTP 403 stops the check, 429 backs off; unrecognized pages are errors rather than empty successful results. No exhaustive coverage or ongoing availability guarantee.
+- Anonymous Docker headed access was proven in short live tests, but extended reliability and access from the eventual server remain unproven. Previously inspected marketplace terms restrict external collection; technical success does not establish platform permission.
+- Disabled by default in fresh deployments; enabled locally at the user's request for evaluation. Toggle it from Sources.
 
-## Vinted — blocked for direct monitoring
+## Vinted — experimental anonymous catalogue
 
-- [robots.txt](https://www.vinted.fr/robots.txt) returned HTTP 200 and permits some public discovery, but robots is not the sole condition.
-- [Current terms](https://www.vinted.fr/terms-and-conditions) returned HTTP 200 and contain restrictions on external scraping/crawling tools and data collection. The older [terms URL](https://www.vinted.fr/terms_and_conditions) was a generic shell during inspection; the current route was checked separately.
-- A single feasibility GET of [the supplied catalogue](https://www.vinted.fr/catalog/3026) loaded public item cards. This does **not** make monitoring authorized or PS5-specific; observed cards included PS1/DS and other platforms. No ongoing adapter was enabled.
-- Authentication: native saved searches may need the user's account; the app stores no Vinted cookies/login credentials.
-- Coverage/rate limits: no direct polling. No authorized public feed/API integration identified.
-- Fallback: native alerts and manual listing entry. Shipping and mandatory fees are not guessed from advertised item prices.
+- Method: anonymous session on vinted.fr, followed by fixed api.vinted.fr/svc-catalogue/items requests. Independently implemented after inspecting VintedScanner; no third-party scanner code or dependencies included.
+- Searches: active configured game titles and explicit aliases with PS5 appended; cheapest and newest ordering, EUR item-price budget, first 24 results in each ordering, deduplicated, maximum 8 distinct queries per check. Search is fuzzy; local matching remains authoritative. No exhaustive coverage claim.
+- No login, personal cookies, proxy rotation, challenge solving or access-denial bypass. Anonymous cookies exist only during each bounded check. HTTP 403 stops access; 429 respects Retry-After. Minimum 5 minutes with scheduler backoff.
+- Catalogue does not confirm physical disc, shipping, delivery, pickup or checkout fees. These remain unknown. Name + price mode permits alerts at advertised item prices; detailed mode retains review candidates. Advertised total_item_price is not assumed to be a delivered total.
+- Independent, undocumented integration. Vinted does not endorse it; endpoints can change. The previously inspected terms restrict external collection; this experimental implementation does not establish platform permission.
+- Disabled by default in fresh deployments; enabled locally for evaluation at the user's request. Source controls allow disabling it.
 
 ## Easy Cash — experimental catalogue candidates
 
@@ -37,7 +37,7 @@ Last verified: **2026-10-01**, Windows PC in France and local Docker Linux/amd64
 - [robots.txt](https://bons-plans.easycash.fr/robots.txt) returned 200. Supplied public category path is allowed for general readers; `/api/`, `/catalog/`, search, buybox and several query routes are restricted and not used.
 - [Legal information](https://www.easycash.fr/mentions-et-conditions/mentions-legales) returned 200 locally. [Sale/repurchase terms](https://www.easycash.fr/mentions-et-conditions/conditions-generales-de-vente-et-de-rachat) are linked for the user's review. No documented feed/API or explicit permission for broader automated offer collection was established. This adapter remains experimental and disabled by default.
 - One public product page was inspected and returned 200; its shop-specific offer/buybox flow was not traversed. The catalogue's JSON-LD includes an aggregate category low price and must not be treated as an individual game price.
-- Coverage: first page only; reference/product IDs across multiple shop offers, not stable individual shop inventory. “À partir de” stays `price_kind=from`; physical format, shipping, fees, pickup and actual availability are unconfirmed. **Never alerts from catalogue prices.**
+- Coverage: first page only; reference/product IDs across multiple shop offers, not stable individual shop inventory. “À partir de” stays `price_kind=from`; physical format, shipping, fees, pickup and actual availability are unconfirmed. Detailed mode retains review candidates; name + price mode may alert on advertised catalogue prices.
 - Authentication: none for the bounded public page. No shop/customer/private endpoints are used.
 - Rate limits: no published quota confirmed; app minimum 4 hours, jitter, Retry-After and error backoff. No dynamic sort/search/pagination requests.
 - Fallback: open the product page, select a genuine offer yourself, then manually record its full details.

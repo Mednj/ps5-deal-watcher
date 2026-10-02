@@ -17,14 +17,17 @@ CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, event_id INTEGER NOT
 CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, source TEXT NOT NULL, started_at REAL NOT NULL, ended_at REAL, status TEXT NOT NULL, count INTEGER NOT NULL DEFAULT 0, message TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS leases(name TEXT PRIMARY KEY, owner TEXT NOT NULL, until_at REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS monitor_incidents(key TEXT PRIMARY KEY, title TEXT NOT NULL, since REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1, notified INTEGER NOT NULL DEFAULT 0, next_alert REAL NOT NULL DEFAULT 0, updated_at REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS monitor_samples(at REAL PRIMARY KEY, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS monitor_pending(event_id INTEGER PRIMARY KEY, since REAL NOT NULL);
 CREATE INDEX IF NOT EXISTS events_due ON events(state,next_at);
 CREATE INDEX IF NOT EXISTS observations_at ON observations(at);
 """
 
 SOURCE_SEED = [
  ('dealabs', 1, 'verified working', 'Public PS5 RSS feed; recent entries only. Shipping, disc format and availability may need review.'),
- ('leboncoin', 0, 'blocked', 'Automated collection restricted by robots.txt and terms. Use native saved searches and manual entry.'),
- ('vinted', 0, 'blocked', 'Terms restrict scraping. Use native saved searches and manual entry; catalogue 3026 includes other platforms.'),
+ ('leboncoin', 0, 'experimental', 'Headed Docker browser: cheapest and newest game searches. Enable to evaluate; access and coverage remain experimental.'),
+ ('vinted', 0, 'experimental', 'Anonymous catalogue searches for configured games. Item-price candidates only; disc, delivery and fees require review. Enable to evaluate.'),
  ('easycash', 0, 'experimental', 'Public first catalogue page only; prices may be from several offers. Review candidates only. Enable to evaluate.'),
 ]
 
@@ -44,10 +47,12 @@ def init():
     with connect() as conn:
         conn.execute('PRAGMA journal_mode=WAL')
         conn.executescript(SCHEMA)
+        if 'manual' not in {r['name'] for r in conn.execute('PRAGMA table_info(events)')}:
+            conn.execute('ALTER TABLE events ADD COLUMN manual INTEGER NOT NULL DEFAULT 0')
         conn.execute("INSERT OR IGNORE INTO metadata VALUES('schema_version','1')")
         for source in SOURCE_SEED:
             conn.execute('INSERT OR IGNORE INTO sources(id,enabled,status,message) VALUES(?,?,?,?)', source)
-        defaults = {'timezone':'Europe/Paris', 'default_interval':'60', 'quiet_start':'', 'quiet_end':'', 'retention_days':'90'}
+        defaults = {'timezone':'Europe/Paris', 'default_interval':'5', 'quiet_start':'', 'quiet_end':'', 'retention_days':'90'}
         for key,value in defaults.items():
             conn.execute('INSERT OR IGNORE INTO settings VALUES(?,?)', (key,value))
     try:

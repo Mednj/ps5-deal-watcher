@@ -6,6 +6,7 @@ x-common: &common
   init: true
   environment:
     DATA_DIR: /data
+    LEBONCOIN_BROWSER_URL: http://browser:8770
     APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:-}
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
@@ -43,5 +44,51 @@ services:
       timeout: 8s
       retries: 3
       start_period: 30s
+  monitor:
+    <<: *common
+    command: [python, -m, app.monitoring]
+    environment:
+      DATA_DIR: /data
+      MONITOR_WEB_URL: http://web:8765/health/ready
+      MONITOR_BROWSER_URL: http://browser:8770/health
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    healthcheck:
+      test: [CMD, python, -c, "import time; from app import db; c=db.connect(); assert time.time()-float(db.settings(c).get('monitor_heartbeat',0))<90"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 30s
+  browser:
+    image: ps5-deal-watcher-browser:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile.browser
+    restart: unless-stopped
+    init: true
+    read_only: true
+    environment:
+      LEBONCOIN_PROFILE_DIR: /browser-data/app-profile
+      LEBONCOIN_BROWSER_MODE: normal
+      LEBONCOIN_PROFILE_MODE: ${LEBONCOIN_PROFILE_MODE:-persistent}
+      LEBONCOIN_INTERACTIVE_SOLVER: ${LEBONCOIN_INTERACTIVE_SOLVER:-false}
+    volumes:
+      - browser-profile:/browser-data
+    ports:
+      - '127.0.0.1:${BROWSER_VIEW_PORT:-6080}:6080'
+    shm_size: 512m
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request,json; assert json.load(urllib.request.urlopen('http://127.0.0.1:8770/health',timeout=5))['ready']"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
 volumes:
   watcher-data:
+  browser-profile:

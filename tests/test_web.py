@@ -16,7 +16,7 @@ def test_pages_empty_and_csrf():
 def test_watch_crud_secret_redaction_and_untrusted_escape():
     with TestClient(app) as client:
         token=csrf(client.get('/watches/new'))
-        form=dict(csrf=token,name='<script>alert(1)</script>',budget='15',basis='all-in',condition='any',sources=['dealabs','vinted'],delivery='on',pickup='on',centres=['Lyon / Villeurbanne'],radius_km='25',interval_minutes='60',timezone='Europe/Paris',checking_start='00:00',checking_end='00:00',active='on',notify_drops='on')
+        form=dict(csrf=token,name='<script>alert(1)</script>',budget='15',qualification='strict',basis='all-in',condition='any',sources=['dealabs','vinted'],delivery='on',pickup='on',centres=['Lyon / Villeurbanne'],radius_km='25',interval_minutes='60',timezone='Europe/Paris',checking_start='00:00',checking_end='00:00',active='on',notify_drops='on')
         assert client.post('/watches/save',data=form).status_code==200
         response=client.get('/')
         assert '&lt;script&gt;' in response.text and '<script>alert(1)</script>' not in response.text
