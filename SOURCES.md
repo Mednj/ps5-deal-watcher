@@ -16,7 +16,7 @@ Last verified: **2026-10-01**, Windows PC in France and local Docker Linux/amd64
 ## Leboncoin — experimental headed Docker browser
 
 - Dedicated internal browser service runs normal headed Chromium with Xvfb. No source credentials, proxy rotation, stealth patches or CAPTCHA solving. The browser's sandbox remains enabled; no public port or data volume is exposed.
-- Active game/alias searches append PS5, use advertised-item budgets, and fetch first-page cheapest and newest listings (up to 35 cards each), deduplicated by listing ID. Maximum 4 distinct searches per check; 5-minute source minimum.
+- Active game/alias searches append PS5, use advertised-item budgets, and fetch up to five pages each for cheapest and newest ordering (up to 35 cards per page), stopping on empty or repeated pages and deduplicating by listing ID. Maximum 4 distinct searches per check; 5-minute source minimum. This is bounded search coverage, not a full-site crawl. Large checks can take several minutes; a page without readable results is reported as an error, preserving prior listings.
 - Parses displayed card title, advertised item price and URL. Fees/disc remain unknown; source-reported purchase-in-progress listings are unavailable. Name + price mode can still match exchanges, empty cases or related games; inspect alerts.
 - HTTP 403 stops the check, 429 backs off; unrecognized pages are errors rather than empty successful results. No exhaustive coverage or ongoing availability guarantee.
 - Anonymous Docker headed access was proven in short live tests, but extended reliability and access from the eventual server remain unproven. Previously inspected marketplace terms restrict external collection; technical success does not establish platform permission.

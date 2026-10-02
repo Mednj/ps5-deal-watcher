@@ -91,7 +91,8 @@ def tick(now=None,checker=sources.check):
         with db.connect() as conn:
             for watch_id,watch in due:
                 # Coalesce missed checks after restart; never replay a backlog.
-                conn.execute('UPDATE watches SET next_at=? WHERE id=?',(now+watch.interval_minutes*60,watch_id))
+                # Long checks shift the next due time from completion, avoiding immediate catch-up loops.
+                conn.execute('UPDATE watches SET next_at=? WHERE id=?',(max(now,time.time())+watch.interval_minutes*60,watch_id))
                 # Offset watch schedules must reuse a fresh shared source snapshot.
                 # Otherwise a watch whose poll follows another watch's fetch can starve forever.
                 enabled={r['id'] for r in conn.execute('SELECT id FROM sources WHERE enabled=1')}

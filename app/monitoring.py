@@ -40,7 +40,7 @@ def snapshot(conn, now, health):
                 and any(source['id'] in w.sources and eligible(w,now,allow_manual=False) for w in watches)
                 and not any(r['ended_at'] is None for r in runs)):
             problems['schedule:'+source['id']]=f"{source['id'].title()}: scheduled check overdue by over 10 minutes"
-    for run in conn.execute("SELECT * FROM runs WHERE ended_at IS NULL AND started_at<?",(now-180,)):
+    for run in conn.execute("SELECT * FROM runs WHERE ended_at IS NULL"):
         budget=sources.CHECK_TIMEOUT.get(run['source'],180)
         if now-run['started_at']>budget:
             problems['stuck:'+run['source']]=f"{run['source'].title()} check exceeds {budget}-second budget"

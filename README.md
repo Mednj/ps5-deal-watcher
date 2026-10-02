@@ -29,7 +29,7 @@ The default port binds only to this PC's loopback address. There is no elaborate
 | --- | --- | --- |
 | Dealabs | Public PS5 RSS, verified live from the local Docker environment | Recent feed entries, usually 20–30 items, not an exhaustive search. Disc, shipping, fees, edition and stock often need review. |
 | Easy Cash | Experimental public catalogue parser; disabled by default | First page only, currently 30 references. Aggregate “from” prices stay candidates and cannot trigger alerts. No private offer endpoint is fetched. |
-| Leboncoin | Experimental headed Chromium service in Docker | Cheapest + newest first-page searches. Up to 4 game/alias queries. Disabled by default; no long-term reliability guarantee. |
+| Leboncoin | Experimental headed Chromium service in Docker | Up to five cheapest and five newest result pages per game/alias query, with duplicate pages and listings removed. Up to 4 searches (40 pages maximum); empty/repeated pages stop early. Bounded coverage, not a full-site crawl. Disabled by default; no long-term reliability guarantee. |
 | Vinted | Experimental anonymous catalogue searches for configured games | First 24 cheapest plus 24 newest results per game/alias, deduplicated, at most 8 searches. Item prices only; disc and delivery costs require review. Disabled by default. |
 
 See [SOURCES.md](SOURCES.md) for dated evidence and tested methods. Feed access does **not** guarantee a qualifying all-in alert: incomplete prices and formats deliberately stay candidates. The app does not infer zero fees from silence. A manually entered real offer with confirmed costs and format can qualify and trigger Telegram.
