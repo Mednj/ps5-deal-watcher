@@ -135,6 +135,16 @@ The restore helper validates integrity and schema version 1 and preserves an exi
 
 Version 0.1.0 has one idempotent initial migration, schema version 1. No future schema downgrade is implied. The dependency versions are locked and the base image digest is recorded in validation. Do not run multiple replicas against the same local SQLite volume.
 
+## GitHub CI/CD deployment
+
+`.github/workflows/ci-cd.yml` runs the test suite and builds all Compose images for pull requests and pushes to `main`. A successful push to `main` then deploys that exact commit through a self-hosted GitHub Actions runner on the home server. The runner initiates its connection to GitHub, so the server can stay on its private LAN address. Deployment rebuilds and restarts changed Compose services, preserves named data volumes, and waits for the web, worker, monitor and browser health checks.
+
+Use a private GitHub repository. Only the trusted `main` branch runs deployment jobs on the self-hosted runner; pull-request tests use GitHub-hosted runners. Anyone able to change workflow or Compose files on `main` can execute code with the runner's Docker access, which is effectively root access to that server. Keep repository write access limited to trusted maintainers and do not run pull-request jobs on the home-server runner.
+
+Before enabling the workflow, configure the server runner with the label `ps5-deal-watcher`, make Docker available to its service account, and provision `/etc/ps5-deal-watcher.env` with mode `0600`. This file must remain outside the checkout and contains the production `APP_PASSWORD_HASH`, Telegram settings, bind address and port. Do not commit `.env` or server data. The runner must check out the repository with `main` as its default branch. The workflow does not expose SSH to GitHub-hosted runners and does not store server passwords or SSH keys in GitHub Actions secrets.
+
+The deploy step leaves the previous data volumes intact. It reports a failed health check in Actions but does not automatically roll back code or database migrations; review the failed deployment and use the backup/restore procedure before any schema rollback.
+
 ## Development without Docker
 
 Python 3.13:
