@@ -16,6 +16,7 @@ import httpx
 from .models import Listing, HOSTS, cents
 from scripts.leboncoin_limits import MAX_PAGES, client_budget, CHECK_BUDGET
 from .matching import normalize, phrase
+from .query_batches import QueryBatch, advance as advance_query_batch, select as select_query_batch
 
 AGENT = 'PS5DealWatcher/0.1 (personal public-feed reader)'
 URLS = {'dealabs':'https://www.dealabs.com/rss/groupe/jeux-playstation-5',
@@ -214,6 +215,7 @@ def parse_vinted(body):
 
 def check_vinted(queries=None):
     try:
+        from_watches=queries is None
         if queries is None:
             from . import db
             from .models import Watch
@@ -231,7 +233,13 @@ def check_vinted(queries=None):
         grouped={}
         for name,budget in queries:grouped[name]=max(grouped.get(name,0),budget)
         queries=list(grouped.items())
-        if len(queries)>8:return Outcome('error',f'Vinted has {len(queries)} distinct active game/alias searches; the per-check limit is 8. Reduce active searches to avoid partial coverage.',[])
+        if from_watches:
+            from . import db
+            with db.connect() as conn:batch=select_query_batch(conn,'vinted',queries,8)
+        else:
+            if len(queries)>8:return Outcome('error',f'Vinted has {len(queries)} requested searches; the per-check limit is 8.',[])
+            batch=QueryBatch(queries,len(queries),1,1,0)
+        queries=batch.queries
         results={}
         with httpx.Client(timeout=httpx.Timeout(20,connect=8),follow_redirects=False,trust_env=False,headers={'User-Agent':AGENT,'Accept-Language':'fr-FR'}) as client:
             vinted_response(client,'https://www.vinted.fr/',stage='homepage')
@@ -244,7 +252,9 @@ def check_vinted(queries=None):
                     body=vinted_response(client,'https://api.vinted.fr/svc-catalogue/items',stage='catalogue',params=params,headers=headers)
                     for listing in parse_vinted(body):
                         if listing.item_cents<=budget:results[listing.external_id]=listing
-        return Outcome('experimental',f'{len(results)} catalogue listings from {len(queries)} searches (cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.',list(results.values()))
+        if from_watches:
+            with db.connect() as conn:advance_query_batch(conn,'vinted',batch)
+        return Outcome('experimental',f'{len(results)} catalogue listings from {len(queries)} searches ({batch.describe()}; cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.',list(results.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except httpx.HTTPError:return Outcome('error','Vinted network timeout or connection error. Existing listings preserved.',[])
     except Exception:return Outcome('error','Vinted adapter/parser failed. Existing listings preserved.',[])
@@ -268,6 +278,7 @@ def parse_leboncoin(items):
 
 def check_leboncoin(queries=None):
     try:
+        from_watches=queries is None
         if queries is None:
             from . import db
             from .models import Watch
@@ -280,8 +291,17 @@ def check_leboncoin(queries=None):
                     for name in [watch.name,*watch.aliases]:
                         query=name+' PS5';grouped[query]=max(grouped.get(query,0),watch.max_cents)
             queries=list(grouped.items())
+        grouped={}
+        for name,budget in queries:grouped[name]=max(grouped.get(name,0),budget)
+        queries=list(grouped.items())
         if not queries:return Outcome('experimental','No active Leboncoin watches to search.',[])
-        if len(queries)>4:return Outcome('error','Leboncoin supports at most 4 distinct active game/alias searches.',[])
+        if from_watches:
+            from . import db
+            with db.connect() as conn:batch=select_query_batch(conn,'leboncoin',queries,4)
+        else:
+            if len(queries)>4:return Outcome('error',f'Leboncoin has {len(queries)} requested searches; the per-check limit is 4.',[])
+            batch=QueryBatch(queries,len(queries),1,1,0)
+        queries=batch.queries
         with httpx.Client(timeout=client_budget(len(queries)),trust_env=False) as client:
             response=client.post(os.environ.get('LEBONCOIN_BROWSER_URL','http://browser:8770')+'/search',json={'queries':[{'name':name,'budget':budget} for name,budget in queries],'pages':MAX_PAGES})
             if response.status_code!=200:return Outcome('error','Internal browser service unavailable or rejected input.',[])
@@ -297,8 +317,10 @@ def check_leboncoin(queries=None):
             return Outcome(status,detail,[],int(payload.get('retry_after',300)))
         budget=max(b for _,b in queries)
         listings={l.external_id:l for l in parse_leboncoin(payload.get('items')) if l.item_cents<=budget}
+        if from_watches:
+            with db.connect() as conn:advance_query_batch(conn,'leboncoin',batch)
         summary='; '.join(f"{s.get('query','search')}: {s.get('pages',0)} pages, {s.get('cards',0)} cards" for s in payload.get('searches',[]))
-        detail=f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched. Up to {MAX_PAGES} per cheapest/newest search."
+        detail=f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched. {batch.describe()}. Up to {MAX_PAGES} per cheapest/newest search."
         if summary:detail+=f' Searches: {summary}.'
         return Outcome('experimental',detail+' Item prices; game-name matching applies.',list(listings.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)

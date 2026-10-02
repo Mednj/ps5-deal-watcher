@@ -11,6 +11,12 @@ def test_challenge_and_consent_are_distinguished():
     assert classify_page('Aucune annonce')['empty_search_detected']
 
 
+def test_french_no_results_page_is_detected_without_being_a_challenge():
+    result = classify_page('Annonces « jeu » : page 2 2 annonces. Désolés, nous n’avons pas ça sous la main ! Recherche sans résultat.')
+    assert result['empty_search_detected']
+    assert not result['challenge_detected']
+
+
 def test_page_contents_are_not_logged(caplog):
     flags = classify_page('captcha SECRET_COOKIE_VALUE')
     with caplog.at_level(logging.WARNING):
@@ -40,3 +46,8 @@ def test_challenge_types_and_routes():
 def test_french_simple_slider_is_not_an_image_puzzle():
     from scripts.browser_diagnostics import classify_challenge
     assert classify_challenge('Faites glisser vers la droite pour sécuriser votre accès',slider=True,image=False)['challenge_kind']=='slide_to_end'
+
+
+def test_accented_french_restriction_is_classified():
+    from scripts.browser_diagnostics import classify_challenge
+    assert classify_challenge('Accès temporairement refusé')['challenge_kind'] == 'restriction'

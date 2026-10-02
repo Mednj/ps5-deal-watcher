@@ -82,9 +82,7 @@ def test_search_is_bounded_deduplicated_and_locally_price_filtered(monkeypatch):
     assert len(outcome.listings) == 3 and len(requests) == 3
     assert {r.url.params['order'] for r in requests[1:]} == {'price_low_to_high', 'newest_first'}
     capped=sources.check_vinted([(f'game {n}',5000) for n in range(9)])
-    assert capped.status == 'error' and '9 distinct' in capped.message and not capped.listings
-
-
+    assert capped.status=='error' and '9 requested searches' in capped.message and not capped.listings
 def test_explicit_duplicate_vinted_searches_are_merged(monkeypatch):
     real_client=httpx.Client
     requests=[]
@@ -96,6 +94,28 @@ def test_explicit_duplicate_vinted_searches_are_merged(monkeypatch):
     outcome=sources.check_vinted([('Elden Ring PS5',4000),('Elden Ring PS5',5000)])
     assert outcome.status=='experimental' and '1 searches' in outcome.message
     assert len(requests)==3
+
+
+def test_active_vinted_searches_rotate_in_bounded_batches(monkeypatch):
+    from app import db
+    from app.models import Watch
+    real_client=httpx.Client
+    searched=[]
+    def respond(request):
+        if request.url.host=='www.vinted.fr':return httpx.Response(200,text='Anonymous home')
+        searched.append(request.url.params['search_text'])
+        return httpx.Response(200,json={'items':[]})
+    monkeypatch.setattr(sources.httpx,'Client',lambda **kwargs:real_client(transport=httpx.MockTransport(respond),**kwargs))
+    names=[f'Game {n:02}' for n in range(11)]
+    with db.connect() as conn:
+        for name in names:
+            watch=Watch(name=name,max_cents=5000,sources=['vinted'])
+            conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(watch.model_dump_json(),0,0))
+    first=sources.check_vinted();second=sources.check_vinted()
+    assert first.status==second.status=='experimental'
+    assert '8 of 11 searches' in first.message and '3 of 11 searches' in second.message
+    assert set(searched)=={f'{name} PS5' for name in names}
+    assert len(searched)==22
 
 
 def test_name_price_qualifies_without_disc_platform_or_fees():

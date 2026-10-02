@@ -41,7 +41,7 @@ def test_browser_connection_payload_dedup_budget_and_block(monkeypatch):
         transport=httpx.MockTransport(respond), **kwargs))
     outcome = sources.check_leboncoin([('Elden Ring PS5', 5000)])
     assert outcome.status == 'experimental' and len(outcome.listings) == 1
-    assert sources.check_leboncoin([('game', 5000)] * 5).status == 'error'
+    assert sources.check_leboncoin([(f'game {n}', 5000) for n in range(5)]).status == 'error'
 
     monkeypatch.setattr(sources.httpx, 'Client', lambda **kwargs: real_client(
         transport=httpx.MockTransport(lambda request: httpx.Response(200, json={

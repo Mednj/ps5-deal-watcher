@@ -2,22 +2,31 @@
 import json
 import logging
 import time
+import unicodedata
 
 logger = logging.getLogger('leboncoin.browser')
 
 
+def _fold_text(value):
+    """Normalize accents so French result and challenge text matches reliably."""
+    decomposed = unicodedata.normalize('NFKD', value or '')
+    return ''.join(char for char in decomposed if not unicodedata.combining(char)).casefold()
+
+
 def classify_page(text, title='', frames=()):
-    sample = (title + ' ' + text).lower()
+    sample = _fold_text(title + ' ' + text)
     return {
         'challenge_detected': any(term in sample for term in (
-            'captcha', 'verify you are human', 'vÃƒÆ’Ã‚Â©rifiez que vous',
-            'enable js', 'enable javascript', 'access denied', 'accÃƒÆ’Ã‚Â¨s refusÃƒÆ’Ã‚Â©',
+            'captcha', 'verify you are human', 'verifiez que vous',
+            'enable js', 'enable javascript', 'access denied', 'acces refuse',
+            'access is temporarily restricted', 'verification required',
         )) or any('captcha-delivery.com' in frame for frame in frames),
         'consent_detected': any(term in sample for term in (
             'continuer sans accepter', 'cookies for good',
         )),
         'empty_search_detected': any(term in sample for term in (
-            'aucune annonce', '0 annonce', 'aucun rÃƒÆ’Ã‚Â©sultat',
+            'aucune annonce', '0 annonce', 'aucun resultat', 'sans resultat',
+            'pas de resultat', 'no results found',
         )),
     }
 
@@ -30,10 +39,10 @@ def emit(run_id, event, started, **fields):
 
 
 def classify_challenge(text='', *, visible=True, path='', slider=False, image=False, audio=False):
-    sample=text.lower()
+    sample=_fold_text(text)
     if not visible:
         return {'challenge_kind':'hidden_frame','challenge_blocking':False,'challenge_confidence':'high'}
-    if any(term in sample for term in ('access is temporarily restricted','access denied','accÃƒÂ¨s refusÃƒÂ©')):
+    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse')):
         kind='restriction'
     elif audio:
         kind='audio'
@@ -41,9 +50,9 @@ def classify_challenge(text='', *, visible=True, path='', slider=False, image=Fa
         kind='slide_to_end'
     elif slider and image:
         kind='image_slider'
-    elif image and any(term in sample for term in ('select','sÃƒÂ©lection','puzzle','image','rotate')):
+    elif image and any(term in sample for term in ('select','selection','puzzle','image','rotate')):
         kind='image_puzzle'
-    elif '/interstitial' in path or '/devicecheck' in path or any(term in sample for term in ('checking your browser','verifying your browser','vÃƒÂ©rification de votre navigateur')):
+    elif '/interstitial' in path or '/devicecheck' in path or any(term in sample for term in ('checking your browser','verifying your browser','verification de votre navigateur')):
         kind='device_check'
     else:
         kind='unknown'
@@ -85,6 +94,7 @@ def inspect_challenge(page):
         text=page.locator('body').inner_text(timeout=3000)[:20000]
     except Exception:
         return {'challenge_kind':'unknown','challenge_blocking':True,'challenge_confidence':'low'}
-    if any(term in text.lower() for term in ('access is temporarily restricted','access denied','accÃƒÂ¨s refusÃƒÂ©','verification required','verify you are human')):
+    sample = _fold_text(text)
+    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse','verification required','verify you are human')):
         return classify_challenge(text)
     return {'challenge_kind':'none','challenge_blocking':False,'challenge_confidence':'high'}
