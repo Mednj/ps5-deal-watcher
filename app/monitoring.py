@@ -4,6 +4,7 @@ import os
 import signal
 import time
 import httpx
+from pathlib import Path
 from . import db, service, sources
 from .matching import eligible, quiet, match
 from .models import Watch, Listing
@@ -17,7 +18,20 @@ def probe(url):
             return response.status_code==200 and response.json().get('ready', True)
     except Exception:return False
 
-def snapshot(conn, now, health):
+def read_json(url):
+    try:
+        with httpx.Client(timeout=3,trust_env=False) as client:
+            response=client.get(url)
+            response.raise_for_status()
+            return response.json()
+    except Exception:return None
+
+def backup_healthy(directory='/backups',now=None):
+    now=time.time() if now is None else now
+    files=list(Path(directory).glob('watcher-*.sqlite3'))
+    return bool(files and now-max(p.stat().st_mtime for p in files)<48*3600)
+
+def snapshot(conn, now, health, browser_progress=None):
     cfg=db.settings(conn)
     problems={}
     for key,ok in health.items():
@@ -74,16 +88,21 @@ def snapshot(conn, now, health):
         elif cfg.get('manual_check_requested')=='1' and now-requested>180:problems['manual']='Manual check has been queued over three minutes'
     data={'at':now,'health':health,'worker_age':round(age,1),'sources':source_stats,'pending':len(rows),'overdue':overdue,
         'telegram_attempts':attempts['total'],'telegram_failures':attempts['total']-attempts['success'],
-        'delivery_delay':round(delay,1) if delay is not None else None,'manual_delay':manual_delay}
+        'delivery_delay':round(delay,1) if delay is not None else None,'manual_delay':manual_delay,
+        'browser_progress':browser_progress}
     return data,problems
 
 def tick(now=None, health=None, sender=service.send_telegram):
     now=time.time() if now is None else now
     if health is None:
         health={'web':probe(os.environ.get('MONITOR_WEB_URL','http://web:8765/health/ready')),
-            'browser':probe(os.environ.get('MONITOR_BROWSER_URL','http://browser:8770/health'))}
+            'browser':probe(os.environ.get('MONITOR_BROWSER_URL','http://browser:8770/health')),
+            'backups':backup_healthy(os.environ.get('MONITOR_BACKUP_DIR','/backups'),now)}
+        browser_url=os.environ.get('MONITOR_BROWSER_URL','http://browser:8770/health').removesuffix('/health')
+        browser_progress=read_json(browser_url+'/status')
+    else:browser_progress=None
     with db.connect() as conn:
-        data,problems=snapshot(conn,now,health)
+        data,problems=snapshot(conn,now,health,browser_progress)
         for key,title in problems.items():
             conn.execute('INSERT INTO monitor_incidents(key,title,since,updated_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET title=excluded.title, since=CASE WHEN monitor_incidents.active=0 THEN excluded.since ELSE monitor_incidents.since END, notified=CASE WHEN monitor_incidents.active=0 THEN 0 ELSE monitor_incidents.notified END, next_alert=CASE WHEN monitor_incidents.active=0 THEN 0 ELSE monitor_incidents.next_alert END, active=1,updated_at=excluded.updated_at',(key,title,now,now))
         for row in conn.execute('SELECT key FROM monitor_incidents WHERE active=1').fetchall():

@@ -55,7 +55,17 @@ def test_actual_search_traverses_five_pages_both_sorts(monkeypatch):
     assert seen==[(sort,page) for sort in ('price','time') for page in range(1,6)]
     assert result['status']=='experimental' and result['pages_fetched']==10
     assert len(result['items'])==6
+    assert result['searches'][0]['query']=='Elden Ring'
+    assert result['searches'][0]['status']=='complete'
     assert client_budget(4)>client_budget(1)>150 and CHECK_BUDGET>client_budget(4)
+
+def test_four_searches_each_report_per_sort_page_counts(monkeypatch):
+    browser,seen=setup_browser(monkeypatch,lambda sort,page:[row(page+100*len(seen))])
+    queries=[{'name':name,'budget':5000} for name in ('Game Alpha','Game Bravo','Game Charlie','Game Delta')]
+    result=browser.search(browser.Searches(queries=queries))
+    assert result['status']=='experimental' and len(result['searches'])==4
+    assert all(s['status']=='complete' and s['pages']==10 and set(s['sorts'])=={'price','time'} for s in result['searches'])
+    assert len(seen)==40
 
 def test_actual_search_stops_repeated_or_empty_pages(monkeypatch):
     browser,seen=setup_browser(monkeypatch,lambda sort,page:[] if sort=='time' else [row(1)])
@@ -74,3 +84,49 @@ def test_page_limit_validation():
     from scripts.leboncoin_browser import Searches
     for pages in (0,6):
         with pytest.raises(ValueError):Searches(queries=[{'name':'game','budget':5000}],pages=pages)
+
+def test_status_endpoint_reports_current_query_progress(monkeypatch):
+    pytest.importorskip('playwright')
+    from fastapi.testclient import TestClient
+    from scripts import leboncoin_browser as browser
+    browser.set_status(running=True,run_id='test',query='Elden Ring',sort='time',page=3,
+                       pages_limit=5,cards_so_far=42,stage='loading_page')
+    with TestClient(browser.app) as client:
+        payload=client.get('/status').json()
+    assert payload['query']=='Elden Ring' and payload['page']==3
+    assert payload['cards_so_far']==42 and payload['running'] is True
+
+def test_new_status_run_clears_stale_failure_fields():
+    pytest.importorskip('playwright')
+    from scripts import leboncoin_browser as browser
+    browser.set_status(running=False,stage='failed',ended_at=123,error='previous failure',searches=[{'query':'old'}])
+    browser.set_status(running=True,stage='starting',run_id='new-run',searches=[])
+    payload=browser.status()
+    assert payload=={'running':True,'stage':'starting','run_id':'new-run','searches':[]}
+
+def test_failed_search_names_query_sort_page_and_preserves_partial_summary(monkeypatch):
+    browser,seen=setup_browser(monkeypatch,lambda sort,page:[row(page)],blocked_page=None)
+    page=browser.search
+    # Make the second page's missing-card state unreadable rather than a confirmed empty result.
+    original=browser.classify_page
+    monkeypatch.setattr(browser,'classify_page',lambda text,*a,**kw:{'empty_search_detected':False,'challenge_detected':False,'consent_detected':False} if seen[-1][1]==2 else original(text,*a,**kw))
+    # Use a page object that times out waiting on the second results page.
+    original_profile=browser.browser_profile
+    from contextlib import contextmanager
+    from types import SimpleNamespace
+    @contextmanager
+    def profile(*args):
+        with original_profile(*args) as context:
+            old_page=context.pages[0]
+            old_wait=old_page.wait_for
+            def wait(**kwargs):
+                if seen[-1][1]==2:raise TimeoutError('No listing cards')
+                return old_wait(**kwargs)
+            old_page.wait_for=wait
+            yield context
+    monkeypatch.setattr(browser,'browser_profile',profile)
+    result=page(browser.Searches(queries=[{'name':'Elden Ring','budget':5000}]))
+    assert result['status']=='error'
+    assert 'Elden Ring' in result['message'] and 'price page 2' in result['message']
+    assert result['searches'][0]['sorts']['price']['pages']==1
+    assert result['searches'][0]['status']=='error'

@@ -80,8 +80,13 @@ def put_listing(conn, listing, now):
 def backup(destination):
     target = Path(destination)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with connect() as source, sqlite3.connect(target) as dest:
-        source.backup(dest)
+    source = connect()
+    try:
+        dest = sqlite3.connect(target)
+        try:source.backup(dest)
+        finally:dest.close()
+    finally:
+        source.close()
     try:
         target.chmod(0o600)
     except OSError:

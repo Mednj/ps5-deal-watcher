@@ -269,9 +269,18 @@ def check_leboncoin(queries=None):
             payload=response.json()
         status=payload.get('status')
         if status not in ('experimental','blocked','rate-limited','error'):raise FetchError('error','Browser returned invalid status.')
-        if status!='experimental':return Outcome(status,payload.get('message','Browser check failed.'),[],int(payload.get('retry_after',300)))
+        if status!='experimental':
+            detail=payload.get('message','Browser check failed.')
+            searches=payload.get('searches',[])
+            if searches:
+                summary='; '.join(f"{s.get('query','search')}: {s.get('status','unknown')} ({s.get('pages',0)} pages, {s.get('cards',0)} cards)" for s in searches)
+                detail=f'{detail} Searches: {summary}.'
+            return Outcome(status,detail,[],int(payload.get('retry_after',300)))
         budget=max(b for _,b in queries)
         listings={l.external_id:l for l in parse_leboncoin(payload.get('items')) if l.item_cents<=budget}
-        return Outcome('experimental',f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched, up to {MAX_PAGES} per cheapest/newest search. Item prices; game-name matching applies.",list(listings.values()))
+        summary='; '.join(f"{s.get('query','search')}: {s.get('pages',0)} pages, {s.get('cards',0)} cards" for s in payload.get('searches',[]))
+        detail=f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched. Up to {MAX_PAGES} per cheapest/newest search."
+        if summary:detail+=f' Searches: {summary}.'
+        return Outcome('experimental',detail+' Item prices; game-name matching applies.',list(listings.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except Exception:return Outcome('error','Leboncoin browser connection or parser failed. Existing listings preserved.',[])

@@ -83,6 +83,8 @@ docker compose run --rm --no-deps web python -m scripts.password
 
 Copy the printed `APP_PASSWORD_HASH='...'` assignment into `.env`. Keep its **single quotes** so Compose does not interpret dollar signs. Recreate services with `docker compose up -d`. Use an existing HTTPS reverse proxy or VPN for remote access; `COOKIE_SECURE=true` is appropriate only over HTTPS. The app defaults to localhost. Explicit LAN binding is possible with `BIND_ADDRESS=<server-LAN-IP>`, but configure authentication first. Router, firewall, Internet exposure and reverse proxy configuration are outside this package.
 
+An optional `https` Compose profile includes Caddy. For a server with a public DNS name, set `WATCHER_DOMAIN` to that name, change `COOKIE_SECURE=true`, ensure DNS points to the server and ports 80/443 reach it, then run `docker compose --profile https up -d`. Caddy obtains and renews a public TLS certificate; the web service remains loopback-bound on the host. This profile has not been activated or tested against a real server/domain. Keep local evaluation on the default localhost-only profile.
+
 ## Operations
 
 ```sh
@@ -101,6 +103,8 @@ Health URLs: `/health/live`, `/health/ready` and `/health/worker` (503 for stale
 ## Backup and restore
 
 The backup helper uses SQLite's backup API to create a consistent snapshot while the app is running. Never copy only the live `.sqlite3` file while WAL writes are in progress.
+
+Compose runs a dedicated backup container. It creates an integrity-checked snapshot at startup and every 24 hours, retaining the latest 14 snapshots in a separate `watcher-backups` volume. It reads the live data volume read-only and has no Telegram credentials. Docker marks it unhealthy if a valid recent snapshot is missing; the Monitoring page also reports backup freshness. Both volumes are still on the same host, so copy important snapshots off-host for protection from host or disk loss. A database or disk failure can also prevent creation of new backups.
 
 ```sh
 docker compose exec -T web python -m scripts.backup /data/backups/watcher.sqlite3
@@ -160,7 +164,7 @@ Browser cookies and profile are stored in the private browser-profile Docker vol
 Set LEBONCOIN_INTERACTIVE_SOLVER=true in your Compose environment to enable one attempt on the observed DataDome slide-to-end challenge. It uses the visible handle and target positions, then requires the challenge to disappear and visible listings to load. Unsupported challenge types are left blocked. No audio transcription or image-puzzle solver is implemented. Disabled by default because the live test moved the slider but resulted in Access is temporarily restricted, without listings. Persistent profile storage remains enabled.
 
 ### Leboncoin profile mode
-LEBONCOIN_PROFILE_MODE defaults to fresh: each cheapest/newest search launches Chromium with its own temporary empty profile. The previous browser closes before the next search. Temporary profiles are removed on success and failure. Existing profiles in browser-profile remain preserved. Set LEBONCOIN_PROFILE_MODE=persistent to reuse /browser-data/profile instead. This applies only to Leboncoin. Fresh profiles have not demonstrated reliable access; challenges remain blocked.
+Compose defaults to a persistent Leboncoin profile in the private `browser-profile` volume so cookies survive container recreation. Set `LEBONCOIN_PROFILE_MODE=fresh` to use an isolated temporary profile per cheapest/newest search; it is removed after the check. Fresh profiles have not demonstrated reliable access. When a container is recreated, stale Chromium singleton lock links are removed only when their recorded process is gone; stored cookies and profile data are preserved.
 
 ### Challenge classification and dispatch
 Leboncoin inspects challenge-frame visibility, frame content and visible controls. Detected types: slide_to_end, image_slider, image_puzzle, audio, device_check, restriction, hidden_frame and unknown. Hidden frames alone do not mark HTTP200 results blocked. Visible device checks get bounded waiting and reclassification; slide_to_end routes to the existing handler only when LEBONCOIN_INTERACTIVE_SOLVER=true. Restriction pages back off. Image and audio solvers are not implemented and are explicitly unsupported. Unrecognised visible challenges remain blocked. Classification is heuristic and can require refinement as site markup changes. Logs record type, confidence and handler without page content, tokens or URLs.

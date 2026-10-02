@@ -51,14 +51,83 @@ services:
       DATA_DIR: /data
       MONITOR_WEB_URL: http://web:8765/health/ready
       MONITOR_BROWSER_URL: http://browser:8770/health
+      MONITOR_BACKUP_DIR: /backups
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+    volumes:
+      - watcher-data:/data
+      - watcher-backups:/backups:ro
     healthcheck:
       test: [CMD, python, -c, "import time; from app import db; c=db.connect(); assert time.time()-float(db.settings(c).get('monitor_heartbeat',0))<90"]
       interval: 30s
       timeout: 8s
       retries: 3
       start_period: 30s
+  backup:
+    image: ps5-deal-watcher:0.1.0
+    build: .
+    command: [python, -m, scripts.backup_daemon]
+    entrypoint: [python, -m, scripts.backup_entrypoint]
+    user: '0:0'
+    restart: unless-stopped
+    init: true
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      DATA_DIR: /data
+      BACKUP_DIR: /backups
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+      BACKUP_RETAIN_COUNT: ${BACKUP_RETAIN_COUNT:-14}
+    volumes:
+      - watcher-data:/data:ro
+      - watcher-backups:/backups
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    healthcheck:
+      test: [CMD, python, -m, scripts.backup_entrypoint, python, -m, scripts.backup_healthcheck]
+      interval: 1h
+      timeout: 10s
+      retries: 2
+      start_period: 2m
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
+  caddy:
+    image: caddy:2-alpine
+    profiles: [https]
+    restart: unless-stopped
+    init: true
+    depends_on:
+      web:
+        condition: service_healthy
+    environment:
+      WATCHER_DOMAIN: ${WATCHER_DOMAIN:-}
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    healthcheck:
+      test: [CMD, caddy, validate, --config, /etc/caddy/Caddyfile]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'
   browser:
     image: ps5-deal-watcher-browser:0.1.0
     build:
@@ -92,3 +161,6 @@ services:
 volumes:
   watcher-data:
   browser-profile:
+  watcher-backups:
+  caddy-data:
+  caddy-config:

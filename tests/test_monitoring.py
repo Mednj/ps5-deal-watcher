@@ -92,3 +92,12 @@ def test_paginated_check_uses_longer_monitor_budget():
         c.execute('UPDATE runs SET started_at=?',(now-CHECK_TIMEOUT['leboncoin']-1,))
         _,problems=monitoring.snapshot(c,now,{'web':True,'browser':True})
         assert 'stuck:leboncoin' in problems
+
+def test_backup_health_requires_recent_snapshot(tmp_path):
+    import os
+    from app.monitoring import backup_healthy
+    assert not backup_healthy(tmp_path,now=10000)
+    backup=tmp_path/'watcher-test.sqlite3';backup.write_bytes(b'test')
+    os.utime(backup,(10000,10000))
+    assert backup_healthy(tmp_path,now=10000)
+    assert not backup_healthy(tmp_path,now=10000+48*3600+1)

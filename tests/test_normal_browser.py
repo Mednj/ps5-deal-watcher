@@ -1,4 +1,5 @@
 from scripts.normal_browser import chromium_command
+from pathlib import Path
 
 
 def test_normal_launch_keeps_debugger_private_and_automation_flags_absent():
@@ -26,3 +27,27 @@ def test_attachment_failure_stops_owned_browser(monkeypatch,tmp_path):
     with pytest.raises(RuntimeError):
         with module.normal_context(fake,tmp_path):pass
     assert stopped==['terminate','wait']
+
+
+def test_stale_profile_lock_links_are_removed_but_profile_is_preserved(monkeypatch,tmp_path):
+    import scripts.normal_browser as module
+    (tmp_path/'Default').mkdir()
+    (tmp_path/'Default'/'Cookies').write_text('preserve')
+    for name,target in [('SingletonLock','oldhost-123'),('SingletonCookie','cookie'),('SingletonSocket','socket')]:
+        (tmp_path/name).symlink_to(target)
+    monkeypatch.setattr(module.socket,'gethostname',lambda:'newhost')
+    module.clear_stale_profile_lock(tmp_path)
+    assert not (tmp_path/'SingletonLock').exists()
+    assert not (tmp_path/'SingletonCookie').exists()
+    assert not (tmp_path/'SingletonSocket').exists()
+    assert (tmp_path/'Default'/'Cookies').read_text()=='preserve'
+
+
+def test_profile_lock_for_live_local_process_is_preserved(monkeypatch,tmp_path):
+    import scripts.normal_browser as module
+    (tmp_path/'SingletonLock').symlink_to('thishost-123')
+    monkeypatch.setattr(module.socket,'gethostname',lambda:'thishost')
+    original_exists=Path.exists
+    monkeypatch.setattr(Path,'exists',lambda self: str(self)=='/proc/123' or original_exists(self))
+    module.clear_stale_profile_lock(tmp_path)
+    assert (tmp_path/'SingletonLock').is_symlink()

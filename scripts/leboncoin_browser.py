@@ -1,6 +1,7 @@
 """Internal bounded search service using ordinary headed Chromium."""
 import uuid
 import random
+import copy
 import tempfile
 from contextlib import ExitStack, contextmanager
 import os
@@ -22,6 +23,18 @@ from .normal_browser import normal_context
 
 app = FastAPI()
 lock = threading.Lock()
+status_lock = threading.Lock()
+current_status = {'running':False,'stage':'idle'}
+
+def set_status(**fields):
+    with status_lock:
+        if fields.get('running') and fields.get('stage') == 'starting':
+            current_status.clear()
+        current_status.update(copy.deepcopy(fields))
+
+@app.get('/status')
+def status():
+    with status_lock:return copy.deepcopy(current_status)
 
 
 class Query(BaseModel):
@@ -75,16 +88,41 @@ def search(request: Searches):
         items = {}
         deadline = time.monotonic() + browser_budget(len(request.queries),request.pages)
         coverage = []
+        summaries=[]
+        set_status(running=True,run_id=run_id,started_at=time.time(),stage='starting',query=None,
+                   query_index=None,sort=None,page=None,pages_limit=request.pages,cards_so_far=0,
+                   searches=summaries,error=None)
+        def fail(status_code,message,retry_after=300):
+            if summaries and summaries[-1]['status']=='running':
+                summaries[-1]['status']=status_code
+                summaries[-1]['message']=message
+                if summaries[-1]['sorts']:
+                    current=next((s for s in summaries[-1]['sorts'].values() if s['status']=='running'),None)
+                    if current:current['status']=status_code
+            emit(run_id,'search_failed',started,status=status_code,message=message,searches=summaries)
+            set_status(running=False,stage='failed',ended_at=time.time(),error=message,
+                       status=status_code,searches=summaries)
+            result={'status':status_code,'message':message,'items':[],'searches':summaries,
+                    'coverage':coverage,'pages_fetched':len(coverage)}
+            if retry_after is not None:result['retry_after']=retry_after
+            return result
         phase='launch'
         with sync_playwright() as p, ExitStack() as sessions:
             mode=os.environ.get('LEBONCOIN_PROFILE_MODE','persistent')
             context=None
             try:
                 for query_index,query in enumerate(request.queries):
+                    summary={'query':query.name,'budget_cents':query.budget,'status':'running',
+                             'pages':0,'cards':0,'sorts':{}}
+                    summaries.append(summary)
+                    set_status(query=query.name,query_index=query_index,sort=None,page=None,
+                               stage='starting_query',cards_so_far=len(items),searches=summaries)
                     for sort, order in [('price', 'asc'), ('time', 'desc')]:
+                        sort_summary={'pages':0,'cards':0,'status':'running','stop_reason':None}
+                        summary['sorts'][sort]=sort_summary
                         if time.monotonic() >= deadline:
                             emit(run_id,'deadline_exceeded',started)
-                            return {'status': 'error', 'message': 'Browser check exceeded time limit.', 'items': []}
+                            return fail('error',f"{query.name}: total search budget expired before {sort} results.")
                         if context is not None and os.environ.get('LEBONCOIN_BROWSER_MODE','normal')!='normal':
                             delay=random.SystemRandom().randint(6000,10000)
                             emit(run_id,'pacing_pause',started,stage='between_searches',duration_ms=delay)
@@ -100,7 +138,9 @@ def search(request: Searches):
                         for page_number in range(1,request.pages+1):
                             if time.monotonic() >= deadline:
                                 emit(run_id,'deadline_exceeded',started,pages_fetched=len(coverage))
-                                return {'status':'error','message':f'Browser check exceeded time limit after {len(coverage)} pages; diagnostics {run_id}.','items':[],'coverage':coverage}
+                                return fail('error',f"{query.name}: time budget expired at {sort} page {page_number} after {len(coverage)} pages; diagnostics {run_id}.")
+                            set_status(query=query.name,query_index=query_index,sort=sort,page=page_number,
+                                       stage='loading_page',cards_so_far=len(items),searches=summaries)
                             phase='navigation'
                             delay=random.SystemRandom().randint(1200,2500)
                             emit(run_id,'pacing_pause',started,stage='before_navigation',duration_ms=delay)
@@ -136,13 +176,12 @@ def search(request: Searches):
                                 emit(run_id,'interactive_outcome',started,outcome=outcome,**challenge)
                                 if outcome=='access_confirmed':status=200
                             if status in (401, 403, 429):
-                                return {'status': 'rate-limited' if status == 429 else 'blocked',
-                                        'message': f"Leboncoin returned HTTP {status}; challenge {challenge['challenge_kind']}, handler {handler}; diagnostics {run_id}.",
-                                        'retry_after': 86400 if status != 429 else 3600, 'items': []}
+                                kind='rate-limited' if status == 429 else 'blocked'
+                                return fail(kind,f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; challenge {challenge['challenge_kind']}, handler {handler}; diagnostics {run_id}.",86400 if status!=429 else 3600)
                             if status != 200:
-                                return {'status': 'error', 'message': f'Leboncoin returned HTTP {status}.', 'items': []}
+                                return fail('error',f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; diagnostics {run_id}.")
                             if challenge['challenge_blocking']:
-                                return {'status':'blocked','message':f"Challenge {challenge['challenge_kind']}; handler {handler}; diagnostics {run_id}.",'items':[],'retry_after':86400}
+                                return fail('blocked',f"{query.name}: challenge {challenge['challenge_kind']} on {sort} page {page_number}; handler {handler}; diagnostics {run_id}.",86400)
                             phase='extraction'
                             selector = 'a[href*="/ad/jeux_video/"]'
                             try:
@@ -150,26 +189,45 @@ def search(request: Searches):
                             except Exception:
                                 text = page.locator('body').inner_text().lower()
                                 flags=classify_page(text,page.title(),[f.url for f in page.frames])
-                                emit(run_id,'cards_missing',started,**flags)
+                                emit(run_id,'cards_missing',started,query=query.name,query_index=query_index,sort=sort,page=page_number,http_status=status,**flags)
                                 if not flags['empty_search_detected']:
-                                    return {'status': 'error', 'message': f'No cards or confirmed empty search; diagnostics {run_id}; needs review.', 'items': []}
+                                    return fail('error',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
                             rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => ({
                                 url:a.href, text:(a.closest('article')?.innerText || '').slice(0,5000)
                             }))""")
                             emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,page_number=page_number,count=len(rows))
                             reason=tracker.collect(rows,items)
                             coverage.append({'query_index':query_index,'sort':sort,'page':page_number,'cards':len(rows),'stop':reason})
+                            sort_summary['pages']+=1;sort_summary['cards']+=len(rows)
+                            summary['pages']+=1;summary['cards']+=len(rows)
+                            sort_summary['stop_reason']=reason
+                            set_status(query=query.name,query_index=query_index,sort=sort,page=page_number,
+                                       stage='page_complete',cards_so_far=len(items),searches=summaries)
                             emit(run_id,'pagination_page',started,**coverage[-1],unique_cards=len(items))
-                            if reason:break
+                            if reason:
+                                sort_summary['status']='complete';break
+                        else:sort_summary['status']='complete'
+                    summary['status']='complete'
+                    set_status(query=query.name,query_index=query_index,sort=None,page=None,
+                               stage='query_complete',cards_so_far=len(items),searches=summaries)
                 emit(run_id,'check_completed',started,unique_cards=len(items),pages_fetched=len(coverage))
+                set_status(running=False,stage='complete',ended_at=time.time(),status='experimental',
+                           query=None,sort=None,page=None,cards_so_far=len(items),searches=summaries,error=None)
                 return {'status': 'experimental', 'message': f'Cheapest + newest: {len(coverage)} pages fetched, up to {request.pages} per search order.',
-                        'items': list(items.values()), 'coverage':coverage, 'pages_fetched':len(coverage), 'page_limit':request.pages}
+                        'items': list(items.values()), 'coverage':coverage, 'pages_fetched':len(coverage),
+                        'page_limit':request.pages,'searches':summaries}
             finally:
                 sessions.close()
                 emit(run_id,'profiles_closed',started,mode=mode,temporary_profiles_removed=mode=='fresh')
     except Exception as exc:
         emit(run_id,'check_failed',started,phase=phase,error_type=type(exc).__name__)
-        return {'status': 'error', 'message': f'Browser {phase} failed; diagnostics {run_id}.', 'items': []}
+        message=f'Browser {phase} failed; diagnostics {run_id}.'
+        summaries=locals().get('summaries',[])
+        if summaries and summaries[-1]['status']=='running':
+            summaries[-1]['status']='error';summaries[-1]['message']=message
+        set_status(running=False,stage='failed',ended_at=time.time(),status='error',
+                   error=message,searches=summaries)
+        return {'status': 'error', 'message': message,'items': [],'searches':summaries}
     finally:
         lock.release()
 
