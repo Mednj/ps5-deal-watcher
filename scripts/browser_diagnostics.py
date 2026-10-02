@@ -19,7 +19,8 @@ def classify_page(text, title='', frames=()):
         'challenge_detected': any(term in sample for term in (
             'captcha', 'verify you are human', 'verifiez que vous',
             'enable js', 'enable javascript', 'access denied', 'acces refuse',
-            'access is temporarily restricted', 'verification required',
+            'access is temporarily restricted', 'acces temporairement refuse',
+            'verification required',
         )) or any('captcha-delivery.com' in frame for frame in frames),
         'consent_detected': any(term in sample for term in (
             'continuer sans accepter', 'cookies for good',
@@ -42,7 +43,7 @@ def classify_challenge(text='', *, visible=True, path='', slider=False, image=Fa
     sample=_fold_text(text)
     if not visible:
         return {'challenge_kind':'hidden_frame','challenge_blocking':False,'challenge_confidence':'high'}
-    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse')):
+    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse','acces temporairement refuse')):
         kind='restriction'
     elif audio:
         kind='audio'
@@ -95,6 +96,6 @@ def inspect_challenge(page):
     except Exception:
         return {'challenge_kind':'unknown','challenge_blocking':True,'challenge_confidence':'low'}
     sample = _fold_text(text)
-    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse','verification required','verify you are human')):
+    if any(term in sample for term in ('access is temporarily restricted','access denied','acces refuse','acces temporairement refuse','verification required','verify you are human')):
         return classify_challenge(text)
     return {'challenge_kind':'none','challenge_blocking':False,'challenge_confidence':'high'}
