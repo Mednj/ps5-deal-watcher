@@ -198,10 +198,26 @@ def search(request: Searches):
                                 emit(run_id,'cards_missing',started,query=query.name,query_index=query_index,sort=sort,page=page_number,http_status=status,**flags)
                                 if not flags['empty_search_detected']:
                                     return fail('error',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
-                            rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => ({
-                                url:a.href, text:(a.closest('article')?.innerText || '').slice(0,5000)
-                            }))""")
-                            emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,page_number=page_number,count=len(rows))
+                            rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => {
+                                let text = (a.closest('article')?.innerText || '').trim();
+                                if (!text) {
+                                    let fallback = '';
+                                    for (let node = a, depth = 0; node && node !== document.body && depth < 10;
+                                         node = node.parentElement, depth += 1) {
+                                        const candidate = (node.innerText || '').trim();
+                                        if (!candidate || candidate.length > 5000) continue;
+                                        const ids = new Set(Array.from(node.querySelectorAll('a[href*="/ad/jeux_video/"]'))
+                                            .map(link => new URL(link.href).pathname));
+                                        if (ids.size !== 1) continue;
+                                        if (!fallback) fallback = candidate;
+                                        if (/prix\\s*:/i.test(candidate)) { text = candidate; break; }
+                                    }
+                                    if (!text) text = fallback;
+                                }
+                                return {url:a.href, text:text.slice(0,5000)};
+                            })""")
+                            emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,page_number=page_number,
+                                 count=len(rows),empty_text_count=sum(not row.get('text','').strip() for row in rows))
                             reason=tracker.collect(rows,items)
                             coverage.append({'query_index':query_index,'sort':sort,'page':page_number,'cards':len(rows),'stop':reason})
                             sort_summary['pages']+=1;sort_summary['cards']+=len(rows)

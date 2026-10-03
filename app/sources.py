@@ -316,11 +316,13 @@ def check_leboncoin(queries=None):
                 detail=f'{detail} Searches: {summary}.'
             return Outcome(status,detail,[],int(payload.get('retry_after',300)))
         budget=max(b for _,b in queries)
-        listings={l.external_id:l for l in parse_leboncoin(payload.get('items')) if l.item_cents<=budget}
+        raw_items=payload.get('items')
+        listings={l.external_id:l for l in parse_leboncoin(raw_items) if l.item_cents<=budget}
         if from_watches:
             with db.connect() as conn:advance_query_batch(conn,'leboncoin',batch)
         summary='; '.join(f"{s.get('query','search')}: {s.get('pages',0)} pages, {s.get('cards',0)} cards" for s in payload.get('searches',[]))
-        detail=f"{len(listings)} browser listings; {payload.get('pages_fetched','unknown')} pages fetched. {batch.describe()}. Up to {MAX_PAGES} per cheapest/newest search."
+        raw_count=len(raw_items) if isinstance(raw_items,list) else 0
+        detail=f"Parsed {len(listings)} listings from {raw_count} extracted cards; {payload.get('pages_fetched','unknown')} pages fetched. {batch.describe()}. Up to {MAX_PAGES} per cheapest/newest search."
         if summary:detail+=f' Searches: {summary}.'
         return Outcome('experimental',detail+' Item prices; game-name matching applies.',list(listings.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
