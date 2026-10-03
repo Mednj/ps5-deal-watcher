@@ -146,6 +146,9 @@ services:
     ports:
       - '127.0.0.1:${BROWSER_VIEW_PORT:-6080}:6080'
     shm_size: 512m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
     tmpfs:
       - /tmp:size=256m,mode=1777
     healthcheck:

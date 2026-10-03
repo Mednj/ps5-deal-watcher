@@ -2,6 +2,8 @@ FROM python:3.13-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 HOME=/tmp/browser-home
 WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends chromium xvfb x11vnc novnc websockify && rm -rf /var/lib/apt/lists/*
+# Container policy blocks Chromium's namespace sandbox; --no-sandbox is paired
+# with a capability-free, no-new-privileges browser container in compose.yaml.
 COPY requirements.lock requirements.browser.lock ./
 RUN pip install --no-cache-dir -r requirements.lock -r requirements.browser.lock && useradd -u 10001 -M watcher && mkdir /browser-data && chown 10001:10001 /browser-data
 COPY scripts ./scripts

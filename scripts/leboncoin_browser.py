@@ -19,12 +19,13 @@ from playwright.sync_api import sync_playwright
 from .browser_diagnostics import classify_page, emit, inspect_challenge, choose_handler
 from .interactive_challenge import attempt_slide
 from .image_puzzle import attempt_image_slider
-from .normal_browser import normal_context
+from .normal_browser import normal_context, chromium_probe
 
 app = FastAPI()
 lock = threading.Lock()
 status_lock = threading.Lock()
 current_status = {'running':False,'stage':'idle'}
+chromium_ready = False
 
 def set_status(**fields):
     with status_lock:
@@ -49,7 +50,9 @@ class Searches(BaseModel):
 
 @app.get('/health')
 def health():
-    return {'ready': Path('/tmp/.X11-unix/X99').exists()}
+    display_ready=Path('/tmp/.X11-unix/X99').exists()
+    return {'ready':display_ready and chromium_ready,
+            'display_ready':display_ready,'chromium_ready':chromium_ready}
 
 
 
@@ -233,6 +236,7 @@ def search(request: Searches):
 
 
 def main():
+    global chromium_ready
     import uvicorn
     display = subprocess.Popen(['Xvfb', ':99', '-screen', '0', '1280x900x24', '-nolisten', 'tcp', '-ac'],
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -247,6 +251,9 @@ def main():
             time.sleep(.1)
         if not Path('/tmp/.X11-unix/X99').exists():
             raise RuntimeError('Virtual display startup timeout')
+        if not chromium_probe():
+            raise RuntimeError('Chromium startup probe failed')
+        chromium_ready=True
         viewers.append(subprocess.Popen(['x11vnc','-display',':99','-rfbport','5900','-localhost','-forever','-shared','-viewonly','-nopw','-quiet'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
         viewers.append(subprocess.Popen(['websockify','--web=/usr/share/novnc','6080','127.0.0.1:5900'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL))
         uvicorn.run(app, host='0.0.0.0', port=8770, access_log=False)

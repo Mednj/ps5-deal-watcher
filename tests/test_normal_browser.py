@@ -2,12 +2,33 @@ from scripts.normal_browser import chromium_command
 from pathlib import Path
 
 
-def test_normal_launch_keeps_debugger_private_and_automation_flags_absent():
+def test_container_launch_keeps_debugger_private_and_declares_required_runtime_flag():
     args=chromium_command('/tmp/dedicated-profile',9227)
     assert '--remote-debugging-address=127.0.0.1' in args
     assert '--user-data-dir=/tmp/dedicated-profile' in args
     assert args[-1]=='https://www.leboncoin.fr/'
-    assert not any('enable-automation' in arg or 'no-sandbox' in arg for arg in args)
+    assert '--no-sandbox' in args
+    assert not any('enable-automation' in arg for arg in args)
+
+
+def test_chromium_probe_uses_blank_page_and_always_stops_browser(monkeypatch):
+    import scripts.normal_browser as module
+    calls=[]
+    class Process:
+        stopped=False
+        def poll(self):return None if not self.stopped else 0
+        def terminate(self):self.stopped=True;calls.append('terminate')
+        def wait(self,**kwargs):calls.append('wait')
+    process=Process()
+    monkeypatch.setattr(module.subprocess,'Popen',lambda args,**kwargs:(calls.append(args),process)[1])
+    class Response:
+        def __enter__(self):return self
+        def __exit__(self,*args):pass
+    monkeypatch.setattr(module.urllib.request,'urlopen',lambda *a,**kw:Response())
+    assert module.chromium_probe(timeout=.1)
+    assert calls[0][-1]=='about:blank'
+    assert '--no-sandbox' in calls[0]
+    assert calls[-2:]==['terminate','wait']
 
 
 def test_attachment_failure_stops_owned_browser(monkeypatch,tmp_path):

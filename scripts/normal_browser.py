@@ -4,15 +4,44 @@ from pathlib import Path
 import os
 import socket
 import subprocess
+import tempfile
 import time
 import urllib.request
 
 
-def chromium_command(profile,port):
+def chromium_command(profile,port,url='https://www.leboncoin.fr/'):
     return ['/usr/bin/chromium','--user-data-dir='+str(profile),
+            '--no-sandbox',
             '--no-errdialogs','--disable-session-crashed-bubble',
             '--remote-debugging-address=127.0.0.1','--remote-debugging-port='+str(port),
-            '--no-first-run','--no-default-browser-check','https://www.leboncoin.fr/']
+            '--no-first-run','--no-default-browser-check',url]
+
+
+def chromium_probe(timeout=12):
+    """Verify Chromium can launch under the container's actual runtime limits."""
+    with tempfile.TemporaryDirectory(prefix='chromium-health-') as profile:
+        with socket.socket() as reserved:
+            reserved.bind(('127.0.0.1',0));port=reserved.getsockname()[1]
+        endpoint='http://127.0.0.1:'+str(port)
+        process=subprocess.Popen(chromium_command(profile,port,'about:blank'),
+                                 stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            deadline=time.monotonic()+timeout
+            while time.monotonic()<deadline:
+                if process.poll() is not None:
+                    return False
+                try:
+                    with urllib.request.urlopen(endpoint+'/json/version',timeout=1):
+                        return True
+                except Exception:
+                    time.sleep(.2)
+            return False
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill();process.wait(timeout=3)
 
 
 def clear_stale_profile_lock(profile):
