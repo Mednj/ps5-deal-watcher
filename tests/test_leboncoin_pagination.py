@@ -79,6 +79,31 @@ def test_challenge_on_later_page_is_not_reported_as_success(monkeypatch):
     assert result['status']=='blocked' and result['items']==[]
     assert seen==[('price',1),('price',2),('price',3)]
 
+def test_http_access_denial_stops_before_challenge_inspection_or_solver(monkeypatch):
+    browser,seen=setup_browser(monkeypatch,lambda sort,page:[row(page)])
+    from types import SimpleNamespace
+    def denied_goto(self,url,**kwargs):
+        self.params=parse_qs(urlsplit(url).query)
+        seen.append((self.params['sort'][0],int(self.params['page'][0])))
+        return SimpleNamespace(status=403,headers={})
+    # Make either kind of challenge handling fail loudly if reached.
+    monkeypatch.setattr(browser,'inspect_challenge',lambda page:pytest.fail('403 must short-circuit challenge inspection'))
+    monkeypatch.setattr(browser,'attempt_slide',lambda *a:pytest.fail('403 must not invoke a challenge solver'))
+    monkeypatch.setattr(browser,'attempt_image_slider',lambda *a:pytest.fail('403 must not invoke a challenge solver'))
+    monkeypatch.setenv('LEBONCOIN_INTERACTIVE_SOLVER','true')
+    from contextlib import contextmanager
+    original_profile=browser.browser_profile
+    @contextmanager
+    def profile(*args):
+        with original_profile(*args) as context:
+            context.pages[0].goto=denied_goto.__get__(context.pages[0],type(context.pages[0]))
+            yield context
+    monkeypatch.setattr(browser,'browser_profile',profile)
+    result=browser.search(browser.Searches(queries=[{'name':'Elden Ring','budget':5000}]))
+    assert result['status']=='blocked' and result['retry_after']==86400
+    assert 'request stopped without challenge interaction' in result['message']
+    assert seen==[('price',1)]
+
 def test_page_limit_validation():
     pytest.importorskip('playwright')
     from scripts.leboncoin_browser import Searches

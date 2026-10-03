@@ -152,6 +152,12 @@ def search(request: Searches):
                                                  wait_until='domcontentloaded', timeout=15000)
                             status = response.status if response else 0
                             emit(run_id,'navigation_response',started,query_index=query_index,sort=sort,page_number=page_number,http_status=status,datadome_header_present=bool(response and any('datadome' in h for h in response.headers)))
+                            # An HTTP access denial is already conclusive. Do not inspect
+                            # or interact with a challenge after the source has refused
+                            # the request; stop this run and let the normal backoff apply.
+                            if status in (401, 403, 429):
+                                kind='rate-limited' if status == 429 else 'blocked'
+                                return fail(kind,f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; request stopped without challenge interaction; diagnostics {run_id}.",86400 if status!=429 else 3600)
                             delay=random.SystemRandom().randint(8500,11500)
                             emit(run_id,'pacing_pause',started,stage='page_settle',duration_ms=delay)
                             page.wait_for_timeout(delay)
@@ -178,9 +184,6 @@ def search(request: Searches):
                                 challenge=inspect_challenge(page)
                                 emit(run_id,'interactive_outcome',started,outcome=outcome,**challenge)
                                 if outcome=='access_confirmed':status=200
-                            if status in (401, 403, 429):
-                                kind='rate-limited' if status == 429 else 'blocked'
-                                return fail(kind,f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; challenge {challenge['challenge_kind']}, handler {handler}; diagnostics {run_id}.",86400 if status!=429 else 3600)
                             if status != 200:
                                 return fail('error',f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; diagnostics {run_id}.")
                             if challenge['challenge_blocking']:
