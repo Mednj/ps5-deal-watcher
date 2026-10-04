@@ -8,6 +8,7 @@ x-common: &common
     DATA_DIR: /data
     LEBONCOIN_BROWSER_URL: http://browser:8770
     APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:-}
+    BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
     COOKIE_SECURE: ${COOKIE_SECURE:-false}
     TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
     TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
@@ -49,6 +50,8 @@ services:
     command: [python, -m, app.monitoring]
     environment:
       DATA_DIR: /data
+      APP_PASSWORD_HASH: ${APP_PASSWORD_HASH:-}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
       MONITOR_WEB_URL: http://web:8765/health/ready
       MONITOR_BROWSER_URL: http://browser:8770/health
       MONITOR_BACKUP_DIR: /backups

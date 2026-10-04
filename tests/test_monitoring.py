@@ -44,16 +44,17 @@ def test_notification_delay_excludes_quiet_hours():
     watch=Watch(name='Elden Ring',max_cents=5000)
     listing=Listing(source='dealabs',external_id='monitor',url='https://www.dealabs.com/test',title='Elden Ring PS5',item_cents=1000)
     with db.connect() as c:
-        c.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(watch.model_dump_json(),now,now))
+        admin=c.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        c.execute('INSERT INTO watches(owner_id,data,next_at,created_at) VALUES(?,?,?,?)',(admin,watch.model_dump_json(),now,now))
         lid=db.put_listing(c,listing,now)
         c.execute('INSERT INTO events(watch_id,listing_id,price_cents,next_at,created_at,message) VALUES(1,?,1000,?,?,?)',(lid,now,now,'test'))
     ok={'web':True,'browser':True}
     assert monitoring.tick(now,ok)['overdue']==0
     heartbeat(now+600);assert monitoring.tick(now+600,ok)['overdue']==1
     with db.connect() as c:
-        db.setting(c,'quiet_start','00:00');db.setting(c,'quiet_end','23:59')
+        db.user_setting(c,admin,'quiet_start','00:00');db.user_setting(c,admin,'quiet_end','23:59')
     assert monitoring.tick(now+601,ok)['overdue']==0
-    with db.connect() as c:db.setting(c,'quiet_start','')
+    with db.connect() as c:db.user_setting(c,admin,'quiet_start','')
     assert monitoring.tick(now+602,ok)['overdue']==0
 
 def test_stuck_check_dashboard_auth_and_retention(monkeypatch):
@@ -67,8 +68,8 @@ def test_stuck_check_dashboard_auth_and_retention(monkeypatch):
         assert c.execute("SELECT active FROM monitor_incidents WHERE key='stuck:vinted'").fetchone()[0]==1
     with TestClient(app) as client:
         assert 'Source performance' in client.get('/monitoring').text
-        monkeypatch.setenv('APP_PASSWORD_HASH','enabled')
-        assert client.get('/monitoring').status_code==401
+        monkeypatch.delenv('APP_AUTH_DISABLED_FOR_TESTS',raising=False)
+        assert client.get('/monitoring',follow_redirects=False).status_code==303
 
 def test_worker_recovers_interrupted_run_without_losing_delivery_lease():
     from app.worker import recover_restart

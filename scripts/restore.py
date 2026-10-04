@@ -9,8 +9,8 @@ if source==target or not source.is_file():raise SystemExit('Choose a separate ex
 with sqlite3.connect(f'file:{source.as_posix()}?mode=ro',uri=True) as incoming:
     if incoming.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise SystemExit('Backup integrity check failed.')
     version=incoming.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-    if not version or version[0]!='1':raise SystemExit('Unsupported schema version.')
+    if not version or version[0] not in ('1','2'):raise SystemExit('Unsupported schema version.')
     if target.exists():db.backup(target.parent/'pre-restore.sqlite3')
     target.parent.mkdir(parents=True,exist_ok=True)
     with sqlite3.connect(target) as destination:incoming.backup(destination)
-print('Restored schema version 1. Keep the pre-restore backup until verification is complete.')
+print(f'Restored schema version {version[0]}. Keep the pre-restore backup until verification is complete.')

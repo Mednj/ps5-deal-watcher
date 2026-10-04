@@ -106,7 +106,7 @@ class Listing(BaseModel):
     physical: bool | None = None
     bundle: bool = False
     price_kind: Literal['exact', 'from', 'coupon', 'membership', 'trade-in', 'installment'] = 'exact'
-    availability: Literal['reported', 'unverified', 'unavailable'] = 'unverified'
+    availability: Literal['confirmed', 'reported', 'unverified', 'unavailable'] = 'unverified'
     provenance: str = Field(default='manual entry', max_length=200)
     observed_at: float = 0
     image: str = ''

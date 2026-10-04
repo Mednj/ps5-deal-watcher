@@ -17,19 +17,21 @@ def offer(**changes):
     data=listing().model_dump();data.update(changes);return Listing(**data)
 
 def watch(**changes):
-    data=dict(name="Demon's Souls",max_cents=1500);data.update(changes);return Watch(qualification='strict',**data)
+    data=dict(name="Demon's Souls",max_cents=1500,qualification='strict');data.update(changes);return Watch(**data)
 
 def persist(w=None,l=None,now=NOW):
     w=w or watch(max_cents=1600);l=l or listing()
     with db.connect() as conn:
-        conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(w.model_dump_json(),now,now))
+        admin=conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        conn.execute('INSERT INTO watches(owner_id,data,next_at,created_at) VALUES(?,?,?,?)',(admin,w.model_dump_json(),now,now))
         wid=conn.execute('SELECT last_insert_rowid()').fetchone()[0]
         lid=db.put_listing(conn,l,now);service.evaluate(conn,wid,w,lid,l,now)
     return wid,lid
 
 def telegram_config():
     with db.connect() as conn:
-        db.setting(conn,'telegram_token','fake:not-real');db.setting(conn,'telegram_chat','1')
+        admin=conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        db.user_setting(conn,admin,'telegram_token','fake:not-real');db.user_setting(conn,admin,'telegram_chat','1')
 
 def test_all_in_arithmetic():
     assert match(watch(),listing()).state=='over-budget'
@@ -49,6 +51,13 @@ def test_pickup_is_separate():
 
 @pytest.mark.parametrize('title',["Demon's Souls PS5 digital","Demon's Souls PS5 compte","Demon's Souls PS5 empty case","Demon's Souls PS5 manette","Demon's Souls 2 PS5 disc"])
 def test_excluded_titles(title):assert match(watch(),offer(title=title)).state=='excluded'
+
+def test_user_exclusions_apply_to_all_match_modes_and_explain_why():
+    configured=watch(qualification='name-price',excluded=['account','DLC','empty box'])
+    result=match(configured,offer(title='Demon\'s Souls PS5 account access'))
+    assert result.state=='excluded' and 'account' in result.reason
+    result=match(configured,offer(description='Includes DLC only'))
+    assert result.state=='excluded' and 'DLC' in result.reason
 
 def test_uncertain_format_and_wrong_platform():
     assert match(watch(max_cents=1600),offer(physical=None)).state=='candidate'
@@ -97,10 +106,26 @@ def test_persistent_retry_same_event():
         assert row['state']=='delivered' and row['attempts']==2
         assert conn.execute('SELECT count(*) FROM events').fetchone()[0]==1
 
+def test_notifications_use_each_watch_owners_telegram_destination():
+    with db.connect() as conn:
+        admin=conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        user_id=conn.execute('INSERT INTO users(username,password_hash,role,created_at) VALUES(?,?,?,?)',('private',db.hash_password('long-private-password'),'user',NOW)).lastrowid
+        db.user_setting(conn,admin,'telegram_token','admin-token');db.user_setting(conn,admin,'telegram_chat','10')
+        db.user_setting(conn,user_id,'telegram_token','private-token');db.user_setting(conn,user_id,'telegram_chat','20')
+        l=listing();listing_id=db.put_listing(conn,l,NOW)
+        for owner_id in (admin,user_id):
+            w=watch(max_cents=1600)
+            wid=conn.execute('INSERT INTO watches(owner_id,data,next_at,created_at) VALUES(?,?,?,?)',(owner_id,w.model_dump_json(),NOW,NOW)).lastrowid
+            service.evaluate(conn,wid,w,listing_id,l,NOW)
+    delivered=[]
+    service.deliver(NOW,lambda token,chat,msg:(delivered.append((token,chat)) or (True,'Delivered.',0)))
+    assert set(delivered)=={('admin-token','10'),('private-token','20')}
+
 def test_quiet_hours_recheck_changed_offer():
     wid,lid=persist();telegram_config()
     with db.connect() as conn:
-        db.setting(conn,'quiet_start','11:00');db.setting(conn,'quiet_end','13:00')
+        owner=conn.execute('SELECT owner_id FROM watches WHERE id=?',(wid,)).fetchone()['owner_id']
+        db.user_setting(conn,owner,'quiet_start','11:00');db.user_setting(conn,owner,'quiet_end','13:00')
     service.deliver(NOW,lambda *_:pytest.fail('Quiet hours sent a notification'))
     with db.connect() as conn:db.put_listing(conn,offer(item_cents=9999),NOW+7200)
     service.deliver(NOW+7200,lambda *_:pytest.fail('Changed price sent a notification'))
@@ -155,7 +180,8 @@ def test_offset_watch_reuses_shared_source_snapshot():
     worker.tick(NOW,lambda _:sources.Outcome('verified working','Fixture only',[real_listing]))
     later_watch=watch(max_cents=1700)
     with db.connect() as conn:
-        conn.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(later_watch.model_dump_json(),NOW+150,NOW+150))
+        owner=conn.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        conn.execute('INSERT INTO watches(owner_id,data,next_at,created_at) VALUES(?,?,?,?)',(owner,later_watch.model_dump_json(),NOW+150,NOW+150))
     worker.tick(NOW+150,lambda _:pytest.fail('Source should still be cooling down'))
     with db.connect() as conn:
         assert conn.execute('SELECT count(*) FROM matches WHERE watch_id=2').fetchone()[0]==1

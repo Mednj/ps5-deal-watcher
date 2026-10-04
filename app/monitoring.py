@@ -58,12 +58,12 @@ def snapshot(conn, now, health, browser_progress=None):
             problems['stuck:'+run['source']]=f"{run['source'].title()} check exceeds {budget}-second budget"
     overdue=0
     eligible_ids=set()
-    rows=conn.execute("SELECT e.*, w.data watch, l.data listing, l.last_at FROM events e JOIN watches w ON w.id=e.watch_id JOIN listings l ON l.id=e.listing_id WHERE e.state IN ('pending','sending')").fetchall()
+    rows=conn.execute("SELECT e.*, w.data watch, w.owner_id, l.data listing, l.last_at FROM events e JOIN watches w ON w.id=e.watch_id JOIN listings l ON l.id=e.listing_id WHERE e.state IN ('pending','sending')").fetchall()
     for event in rows:
         watch=Watch.model_validate_json(event['watch']); listing=Listing.model_validate_json(event['listing'])
         result=match(watch,listing)
         previous=conn.execute('SELECT lowest_cents FROM notified WHERE watch_id=? AND listing_id=?',(event['watch_id'],event['listing_id'])).fetchone()
-        ready=(not quiet(cfg,now) and watch.active and (watch.end_at is None or now<watch.end_at)
+        ready=(not quiet(db.user_settings(conn,event['owner_id']),now) and watch.active and (watch.end_at is None or now<watch.end_at)
             and (event['manual'] or eligible(watch,now,allow_manual=False)) and now-event['last_at']<=21600
             and result.state=='qualified' and result.total==event['price_cents']
             and (previous is None or event['price_cents']<previous['lowest_cents']))

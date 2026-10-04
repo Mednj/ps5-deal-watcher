@@ -40,14 +40,21 @@ def evaluate(conn,watch_id,watch,listing_id,listing,now):
     return result
 
 def reevaluate_watch(conn,watch_id,now):
-    row=conn.execute('SELECT data FROM watches WHERE id=?',(watch_id,)).fetchone()
+    row=conn.execute('SELECT data,owner_id FROM watches WHERE id=?',(watch_id,)).fetchone()
     if not row:return
     watch=Watch.model_validate_json(row['data'])
-    for row in conn.execute('SELECT * FROM listings WHERE last_at>?',(now-86400,)).fetchall():
+    for row in conn.execute('SELECT * FROM listings WHERE last_at>? AND (owner_id IS NULL OR owner_id=?)',(now-86400,row['owner_id'])).fetchall():
         evaluate(conn,watch_id,watch,row['id'],Listing.model_validate_json(row['data']),now)
 
-def telegram_credentials(conn):
-    config=db.settings(conn)
+def telegram_credentials(conn,user_id=None):
+    # Deal alerts always use the owning user's private destination. Environment
+    # credentials remain available only for system-level monitoring alerts.
+    config=db.user_settings(conn,user_id) if user_id is not None else db.settings(conn)
+    if user_id is not None:
+        role=conn.execute('SELECT role FROM users WHERE id=?',(user_id,)).fetchone()
+        if role and role['role']=='admin':
+            return config.get('telegram_token','') or os.environ.get('TELEGRAM_BOT_TOKEN',''),config.get('telegram_chat','') or os.environ.get('TELEGRAM_CHAT_ID','')
+        return config.get('telegram_token',''),config.get('telegram_chat','')
     return os.environ.get('TELEGRAM_BOT_TOKEN','') or config.get('telegram_token',''),os.environ.get('TELEGRAM_CHAT_ID','') or config.get('telegram_chat','')
 
 def send_telegram(token,chat,message):
@@ -69,22 +76,24 @@ def deliver(now=None,sender=send_telegram):
         if not db.acquire(conn,'delivery',owner,now,120):return
     try:
         with db.connect() as conn:
-            config=db.settings(conn)
-            if quiet(config,now):return
-            token,chat=telegram_credentials(conn)
-            if not token or not chat:return
             # Recover uncertain sends after a worker crash. Telegram has no idempotency key.
             conn.execute("UPDATE events SET state='pending' WHERE state='sending' AND next_at<?",(now,))
-            rows=conn.execute("SELECT * FROM events WHERE state='pending' AND next_at<=? ORDER BY id LIMIT 10",(now,)).fetchall()
+            rows=conn.execute("SELECT e.*,w.owner_id FROM events e JOIN watches w ON w.id=e.watch_id WHERE e.state='pending' AND e.next_at<=? AND EXISTS (SELECT 1 FROM user_settings s WHERE s.user_id=w.owner_id AND s.key='telegram_token' AND s.value!='') AND EXISTS (SELECT 1 FROM user_settings s WHERE s.user_id=w.owner_id AND s.key='telegram_chat' AND s.value!='') ORDER BY e.id LIMIT 50",(now,)).fetchall()
         for event in rows:
             with db.connect() as conn:
+                user_config=db.user_settings(conn,event['owner_id'])
+                if quiet(user_config,now):
+                    conn.execute('UPDATE events SET next_at=? WHERE id=?',(now+300,event['id']));continue
+                token,chat=telegram_credentials(conn,event['owner_id'])
+                if not token or not chat:continue
                 w=conn.execute('SELECT data FROM watches WHERE id=?',(event['watch_id'],)).fetchone()
                 l=conn.execute('SELECT data,last_at FROM listings WHERE id=?',(event['listing_id'],)).fetchone()
                 if not w or not l:continue
                 watch=Watch.model_validate_json(w['data']); listing=Listing.model_validate_json(l['data'])
                 if not watch.active or (watch.end_at is not None and now>=watch.end_at):
                     conn.execute("UPDATE events SET state='cancelled',last_error='Watch paused or expired.' WHERE id=?",(event['id'],));continue
-                if not eligible(watch,now,allow_manual=False) and not event['manual']:continue
+                if not eligible(watch,now,allow_manual=False) and not event['manual']:
+                    conn.execute('UPDATE events SET next_at=? WHERE id=?',(now+300,event['id']));continue
                 result=match(watch,listing)
                 previous=conn.execute('SELECT lowest_cents FROM notified WHERE watch_id=? AND listing_id=?',(event['watch_id'],event['listing_id'])).fetchone()
                 if result.state!='qualified' or result.total!=event['price_cents'] or (previous and event['price_cents']>=previous['lowest_cents']):

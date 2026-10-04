@@ -13,6 +13,8 @@ import time
 import uuid
 from app import db
 
+SUPPORTED_SCHEMA_VERSIONS={'1','2'}
+
 def restore_verification_valid(directory,backup):
     try:
         marker=json.loads((Path(directory)/'.restore-verified').read_text())
@@ -28,7 +30,7 @@ def backup_healthy(directory='/backups',now=None,check_integrity=False):
         with closing(sqlite3.connect(f'file:{files[0].resolve().as_posix()}?mode=ro',uri=True)) as conn:
             if conn.execute('PRAGMA integrity_check').fetchone()[0]!='ok':return False
             version=conn.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            return bool(version and version[0]=='1')
+            return bool(version and version[0] in SUPPORTED_SCHEMA_VERSIONS)
     except (OSError,sqlite3.Error):return False
 
 def _record_restore_verification(directory,backup):
@@ -53,7 +55,7 @@ def _restore_drill(backup,directory):
         with closing(sqlite3.connect(source_uri,uri=True)) as source,closing(sqlite3.connect(restored_uri,uri=True)) as clone:
             if clone.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('Restored backup integrity check failed.')
             version=clone.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            if not version or version[0]!='1':raise RuntimeError('Restored backup schema version is unsupported.')
+            if not version or version[0] not in SUPPORTED_SCHEMA_VERSIONS:raise RuntimeError('Restored backup schema version is unsupported.')
             tables=[row[0] for row in source.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
             for table in tables:
                 escaped=table.replace('"','""')
@@ -88,7 +90,7 @@ def backup_once(now=None,force=False):
         try:
             if check.execute('PRAGMA integrity_check').fetchone()[0]!='ok':raise RuntimeError('Backup integrity check failed.')
             version=check.execute("SELECT value FROM metadata WHERE key='schema_version'").fetchone()
-            if not version or version[0]!='1':raise RuntimeError('Backup schema version is unsupported.')
+            if not version or version[0] not in SUPPORTED_SCHEMA_VERSIONS:raise RuntimeError('Backup schema version is unsupported.')
             checkpoint=check.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()
             if checkpoint and checkpoint[0]!=0:raise RuntimeError('Backup WAL checkpoint was busy.')
             check.execute('PRAGMA journal_mode=DELETE')

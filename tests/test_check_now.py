@@ -12,11 +12,12 @@ def test_manual_pass_runs_all_selected_sources_concurrently_outside_schedule(mon
     watch=Watch(name='Elden Ring',max_cents=2000,checking_start='19:00',checking_end='00:00')
     assert not eligible(watch,now)
     with db.connect() as c:
-        c.execute('INSERT INTO watches(data,next_at,created_at) VALUES(?,?,?)',(watch.model_dump_json(),now+86400,now))
+        admin=c.execute("SELECT id FROM users WHERE username='admin'").fetchone()['id']
+        c.execute('INSERT INTO watches(owner_id,data,next_at,created_at) VALUES(?,?,?,?)',(admin,watch.model_dump_json(),now+86400,now))
         c.execute('UPDATE sources SET enabled=0,next_at=?',(now+86400,))
         db.setting(c,'manual_check_requested',1)
-        db.setting(c,'telegram_token','test-token')
-        db.setting(c,'telegram_chat','test-chat')
+        db.user_setting(c,admin,'telegram_token','test-token')
+        db.user_setting(c,admin,'telegram_chat','test-chat')
     barrier=threading.Barrier(4);calls=[]
     def checker(source):
         calls.append(source)

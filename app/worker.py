@@ -26,13 +26,13 @@ def tick(now=None,checker=sources.check):
     try:
         with db.connect() as conn:
             config=db.settings(conn)
-            watches=[(r['id'],Watch.model_validate_json(r['data']),r['next_at']) for r in conn.execute('SELECT * FROM watches')]
+            watches=[(r['id'],Watch.model_validate_json(r['data']),r['next_at'],r['owner_id']) for r in conn.execute('SELECT * FROM watches')]
             manual=config.get('manual_check_requested')=='1'
             token=manual_check.set(manual)
             if manual:
                 db.setting(conn,'manual_check_requested',0)
                 db.setting(conn,'manual_check_running',1)
-            due=[(i,w) for i,w,next_at in watches if (manual or next_at<=now) and eligible(w,now)]
+            due=[(i,w,owner_id) for i,w,next_at,owner_id in watches if (manual or next_at<=now) and eligible(w,now)]
             active_sources=list(conn.execute('SELECT * FROM sources' if manual else 'SELECT * FROM sources WHERE enabled=1'))
         def fetch(source_id):
             thread_token=manual_check.set(manual)
@@ -45,7 +45,7 @@ def tick(now=None,checker=sources.check):
         tasks={}
         try:
             for source in active_sources:
-                interested=[(i,w) for i,w in due if source['id'] in w.sources]
+                interested=[(i,w,owner_id) for i,w,owner_id in due if source['id'] in w.sources]
                 if not interested or (not manual and source['next_at']>now):continue
                 source_id=source['id']
                 with db.connect() as conn:
@@ -70,7 +70,7 @@ def tick(now=None,checker=sources.check):
                 finished=time.time() if realtime else now
                 success=outcome.status in ('verified working','experimental')
                 failures=0 if success else source['failures']+1
-                interval=max(sources.MIN_INTERVAL[source_id],min(w.interval_minutes*60 for _,w in interested))
+                interval=max(sources.MIN_INTERVAL[source_id],min(w.interval_minutes*60 for _,w,_ in interested))
                 backoff=max(outcome.retry_after,min(86400,interval*2**min(failures,5))) if failures else interval
                 if outcome.status in ('blocked','challenge') or failures>=3:backoff=max(backoff,86400)
                 next_at=finished+backoff+(0 if success and source_id in ('dealabs','vinted','leboncoin') else random.uniform(1,30))
@@ -80,7 +80,7 @@ def tick(now=None,checker=sources.check):
                         for listing in outcome.listings:
                             listing_id=db.put_listing(conn,listing,finished)
                             listing_ids.append((listing_id,listing.model_copy(update={'observed_at':finished})))
-                        for watch_id,watch in interested:
+                        for watch_id,watch,watch_owner in interested:
                             for listing_id,listing in listing_ids:service.evaluate(conn,watch_id,watch,listing_id,listing,finished)
                         conn.execute('UPDATE sources SET last_success=? WHERE id=?',(finished,source_id))
                     conn.execute('UPDATE sources SET status=?,message=?,failures=?,next_at=? WHERE id=?',(outcome.status,outcome.message,failures,next_at,source_id))
@@ -89,18 +89,18 @@ def tick(now=None,checker=sources.check):
                 service.deliver(finished)
         finally:executor.shutdown(wait=True)
         with db.connect() as conn:
-            for watch_id,watch in due:
+            for watch_id,watch,watch_owner in due:
                 # Coalesce missed checks after restart; never replay a backlog.
                 # Long checks shift the next due time from completion, avoiding immediate catch-up loops.
                 conn.execute('UPDATE watches SET next_at=? WHERE id=?',(max(now,time.time())+watch.interval_minutes*60,watch_id))
                 # Offset watch schedules must reuse a fresh shared source snapshot.
                 # Otherwise a watch whose poll follows another watch's fetch can starve forever.
                 enabled={r['id'] for r in conn.execute('SELECT id FROM sources WHERE enabled=1')}
-                for row in ([] if manual else conn.execute('SELECT * FROM listings WHERE last_at>?',(now-21600,)).fetchall()):
+                for row in ([] if manual else conn.execute('SELECT * FROM listings WHERE last_at>? AND (owner_id IS NULL OR owner_id=?)',(now-21600,watch_owner)).fetchall()):
                     listing=Listing.model_validate_json(row['data'])
                     if listing.provenance=='manual entry' or listing.source in enabled:
                         service.evaluate(conn,watch_id,watch,row['id'],listing,now)
-            retention=int(config.get('retention_days','90'))*86400
+            retention=730*86400
             conn.execute('DELETE FROM observations WHERE at<?',(now-retention,))
             conn.execute('DELETE FROM runs WHERE started_at<?',(now-retention,))
             # Preserve listings, events and notified price minima for deduplication.

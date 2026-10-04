@@ -10,4 +10,5 @@ def isolated_database(tmp_path,monkeypatch):
     monkeypatch.delenv('TELEGRAM_BOT_TOKEN',raising=False)
     monkeypatch.delenv('TELEGRAM_CHAT_ID',raising=False)
     monkeypatch.delenv('APP_PASSWORD_HASH',raising=False)
+    monkeypatch.setenv('APP_AUTH_DISABLED_FOR_TESTS','1')
     db.init()

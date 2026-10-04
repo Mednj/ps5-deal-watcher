@@ -21,7 +21,7 @@ Or run `scripts/start-local.ps1`. Open **http://127.0.0.1:8765**. Both services 
 3. Configure Telegram in Settings, save, and click Send Telegram test. Do not paste tokens into chats or source code.
 4. Use Deals for matches and Activity for runs and the persistent outbox.
 
-The default port binds only to this PC's loopback address. There is no elaborate user system; an optional single password is provided for deployment beyond local evaluation.
+The default port binds only to this PC's loopback address. A fresh local database bootstraps **admin / admin@** and forces a password change at first login. For unattended remote provisioning, set a unique `BOOTSTRAP_ADMIN_PASSWORD`; on upgrade, an existing protected `APP_PASSWORD_HASH` is reused as the admin's temporary password. The admin can create and disable accounts. Watches, manual entries, deal/match history, alert events, schedule preferences and Telegram destinations are private to each account. Public source results and source-health status are shared by the service.
 
 ## What works and what is limited
 
@@ -49,9 +49,9 @@ Email/native-alert ingestion is not implemented in this version. No source crede
 
 ## Telegram
 
-Use the official [bot tutorial](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) to create a bot through @BotFather. Send your bot a message before testing. Obtain your chat ID locally using the official `getUpdates` endpoint or your trusted Telegram tooling; don't give a third-party website your token. Settings accepts the token and chat ID without displaying stored values.
+Use the official [bot tutorial](https://core.telegram.org/bots/tutorial#obtain-your-bot-token) to create a bot through @BotFather. Send your bot a message before testing. Obtain your chat ID locally using the official `getUpdates` endpoint or your trusted Telegram tooling; don't give a third-party website your token. Each account adds its own token and chat ID in Settings. Deal alerts never use another user's Telegram destination.
 
-Alternatively fill `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in your private `.env`; environment values take precedence. Dashboard configuration is stored in the SQLite volume. Both the volume and backups therefore contain secrets and must be protected.
+Optional `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` environment variables can send system-monitoring alerts and serve as a fallback for the admin's deal alerts. Other accounts always use their private credentials. Per-user deal-alert credentials and settings are stored in the SQLite volume. Protect the volume and backups.
 
 Alerts contain the source, title, item/shipping/fees/total, condition, location, reason, and original link. First qualification alerts once; further alerts require a strictly lower qualifying price if enabled. Events and attempts survive restarts. Failed sends retry with backoff. Quiet-hour events are queued and re-matched before delivery; observations older than 6 hours wait for a new check or manual update.
 
@@ -75,13 +75,7 @@ docker compose ps
 
 Confirm CPU architecture and build the image on the target host. Local validation is on Linux/amd64; ARM is not yet verified.
 
-For a simple login, generate a password hash locally:
-
-```sh
-docker compose run --rm --no-deps web python -m scripts.password
-```
-
-Copy the printed `APP_PASSWORD_HASH='...'` assignment into `.env`. Keep its **single quotes** so Compose does not interpret dollar signs. Recreate services with `docker compose up -d`. Use an existing HTTPS reverse proxy or VPN for remote access; `COOKIE_SECURE=true` is appropriate only over HTTPS. The app defaults to localhost. Explicit LAN binding is possible with `BIND_ADDRESS=<server-LAN-IP>`, but configure authentication first. Router, firewall, Internet exposure and reverse proxy configuration are outside this package.
+After the first login as `admin / admin@`, set a private password before continuing. Create additional accounts from **Users**; each new account must change its temporary password at login. Use a unique, long password, especially if the service is reachable over a LAN or HTTPS reverse proxy. `COOKIE_SECURE=true` is appropriate only over HTTPS. The app defaults to localhost. Explicit LAN binding is possible with `BIND_ADDRESS=<server-LAN-IP>`. Router, firewall, Internet exposure and reverse proxy configuration are outside this package.
 
 An optional `https` Compose profile includes Caddy. For a server with a public DNS name, set `WATCHER_DOMAIN` to that name, change `COOKIE_SECURE=true`, ensure DNS points to the server and ports 80/443 reach it, then run `docker compose --profile https up -d`. Caddy obtains and renews a public TLS certificate; the web service remains loopback-bound on the host. This profile has not been activated or tested against a real server/domain. Keep local evaluation on the default localhost-only profile.
 
@@ -143,7 +137,7 @@ Version 0.1.0 has one idempotent initial migration, schema version 1. No future 
 
 Use a private GitHub repository. Only the trusted `main` branch runs deployment jobs on the self-hosted runner; pull-request tests use GitHub-hosted runners. Anyone able to change workflow or Compose files on `main` can execute code with the runner's Docker access, which is effectively root access to that server. Keep repository write access limited to trusted maintainers and do not run pull-request jobs on the home-server runner.
 
-Before enabling the workflow, configure the server runner with the label `ps5-deal-watcher`, make Docker available to its service account, and provision `/etc/ps5-deal-watcher.env` with mode `0600`. This file must remain outside the checkout and contains the production `APP_PASSWORD_HASH`, Telegram settings, bind address and port. Do not commit `.env` or server data. The runner must check out the repository with `main` as its default branch. The workflow does not expose SSH to GitHub-hosted runners and does not store server passwords or SSH keys in GitHub Actions secrets.
+Before enabling the workflow, configure the server runner with the label `ps5-deal-watcher`, make Docker available to its service account, and provision `/etc/ps5-deal-watcher.env` with mode `0600`. This file must remain outside the checkout and contains monitoring Telegram credentials (if used), bind address and port. User accounts live in the protected database volume. Do not commit `.env` or server data. The runner must check out the repository with `main` as its default branch. The workflow does not expose SSH to GitHub-hosted runners and does not store server passwords or SSH keys in GitHub Actions secrets.
 
 The deploy step leaves the previous data volumes intact. It reports a failed health check in Actions but does not automatically roll back code or database migrations; review the failed deployment and use the backup/restore procedure before any schema rollback.
 

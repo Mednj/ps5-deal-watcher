@@ -57,6 +57,9 @@ def match(watch: Watch, listing: Listing):
     name = next((name for name in [watch.name,*watch.aliases] if phrase(name,listing.title)), None)
     if not name:
         return Match('excluded','Game name or explicit alias not found in title.')
+    excluded_term=next((term for term in watch.excluded if term.strip() and phrase(term,text)),None)
+    if excluded_term:
+        return Match('excluded',f'Excluded term "{excluded_term}" matched the listing title or description.')
     if watch.qualification == 'name-price':
         if listing.availability == 'unavailable':
             return Match('excluded','Source reports unavailable.')
@@ -68,8 +71,9 @@ def match(watch: Watch, listing: Listing):
     if re.match(r'^(?:[0-9]+|ii|iii|iv|v|vi|vii|viii|ix|x)(?: |$)',tail):
         return Match('excluded','Title appears to be a different sequel. Add its full name as a watch.')
     forbidden = ['digital','numerique','dematerialise','code de telechargement','download code','cle cd','cd key','compte','account','boite vide','empty case','boitier seul','sans disque','manette','controller','accessoire','season pass','dlc']
-    if any(phrase(term,text) for term in forbidden + watch.excluded):
-        return Match('excluded','Digital/account/empty-case/accessory or excluded term detected.')
+    matched_forbidden=next((term for term in forbidden if phrase(term,text)),None)
+    if matched_forbidden:
+        return Match('excluded',f'Excluded listing type "{matched_forbidden}" detected.')
     if listing.physical is False:
         return Match('excluded','Listing is not a physical disc.')
     if listing.bundle or any(phrase(x,listing.title) for x in ['bundle','lot de','pack de']):
@@ -134,4 +138,5 @@ def match(watch: Watch, listing: Listing):
     evidence = f'Title matches {name}; platform {listing.platform}; disc {listing.physical}; {route}.'
     if reasons:
         return Match('candidate',evidence + ' Review: ' + '; '.join(dict.fromkeys(reasons)) + '.',total,route)
-    return Match('qualified',evidence + ' Price within budget. Availability is source-reported, not independently confirmed.',total,route)
+    availability_note='Availability was marked confirmed during manual review.' if listing.availability=='confirmed' else 'Availability is source-reported or unverified, not independently confirmed.'
+    return Match('qualified',evidence + f' Price within budget. {availability_note}',total,route)
