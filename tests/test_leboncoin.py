@@ -15,6 +15,15 @@ def test_browser_card_price_and_name_match():
     assert match(Watch(name='Elden Ring', max_cents=5000), listing).state == 'qualified'
 
 
+def test_browser_card_uses_accessible_title_when_text_is_flattened():
+    listing = sources.parse_leboncoin([{
+        **card('Elden Ring PS5 27 € Prix: 27 €. Livraison disponible'),
+        'title': 'Elden Ring PS5',
+    }])[0]
+    assert listing.title == 'Elden Ring PS5'
+    assert listing.item_cents == 2700
+
+
 def test_pending_purchase_excluded_and_external_url_refused():
     items = sources.parse_leboncoin([card('Elden Ring PS5\nPrix: 15 €.\nAchat en cours'),
                                     card(url='https://evil.example/ad/123')])

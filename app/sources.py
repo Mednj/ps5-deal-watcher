@@ -265,7 +265,7 @@ def parse_leboncoin(items):
     results=[]
     for item in items:
         try:
-            text=item['text'];title=text.split('\n',1)[0].strip()
+            text=item['text'];title=(item.get('title') or text.split('\n',1)[0]).strip()
             found=re.search(r'Prix:\s*([0-9]+(?:[,.][0-9]{1,2})?)\s*€',text)
             if not found:continue
             url=item['url'];platform='ps5' if re.search(r'\bps5\b|\bplaystation 5\b',normalize(title)) else 'unknown'

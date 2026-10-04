@@ -199,12 +199,14 @@ def search(request: Searches):
                                 if not flags['empty_search_detected']:
                                     return fail('error',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
                             rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => {
-                                let text = (a.closest('article')?.innerText || '').trim();
+                                const article = a.closest('article');
+                                const readText = node => (node?.textContent || '').replace(/\\s+/g, ' ').trim();
+                                let text = readText(article);
                                 if (!text) {
                                     let fallback = '';
                                     for (let node = a, depth = 0; node && node !== document.body && depth < 10;
                                          node = node.parentElement, depth += 1) {
-                                        const candidate = (node.innerText || '').trim();
+                                        const candidate = readText(node);
                                         if (!candidate || candidate.length > 5000) continue;
                                         const ids = new Set(Array.from(node.querySelectorAll('a[href*="/ad/jeux_video/"]'))
                                             .map(link => new URL(link.href).pathname));
@@ -214,7 +216,7 @@ def search(request: Searches):
                                     }
                                     if (!text) text = fallback;
                                 }
-                                return {url:a.href, text:text.slice(0,5000)};
+                                return {url:a.href, title:(article?.getAttribute('aria-label') || '').trim(), text:text.slice(0,5000)};
                             })""")
                             emit(run_id,'cards_extracted',started,query_index=query_index,sort=sort,page_number=page_number,
                                  count=len(rows),empty_text_count=sum(not row.get('text','').strip() for row in rows))
