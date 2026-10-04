@@ -219,17 +219,22 @@ def local_input(stamp,zone):
 
 @app.get('/watches/new')
 def new_watch(request:Request):
-    with db.connect() as conn:cfg=db.user_settings(conn,current_user(request)['id'])
+    user=current_user(request)
+    with db.connect() as conn:
+        cfg=db.user_settings(conn,user['id']);token,chat=service.telegram_credentials(conn,user['id'])
     watch=Watch(name='New watch',max_cents=1500,interval_minutes=int(cfg['default_interval']),timezone=cfg['timezone']).model_dump()
     watch['name']=''
-    return render(request,'watch.html',watch=watch,watch_id=None,start_value='',end_value='')
+    return render(request,'watch.html',watch=watch,watch_id=None,start_value='',end_value='',telegram_ready=bool(token and chat))
 
 @app.get('/watches/{watch_id}/edit')
 def edit_watch(request:Request,watch_id:int):
-    with db.connect() as conn:row=conn.execute('SELECT data FROM watches WHERE id=? AND owner_id=?',(watch_id,current_user(request)['id'])).fetchone()
+    user=current_user(request)
+    with db.connect() as conn:
+        row=conn.execute('SELECT data FROM watches WHERE id=? AND owner_id=?',(watch_id,user['id'])).fetchone()
+        token,chat=service.telegram_credentials(conn,user['id'])
     if not row:raise HTTPException(404)
     watch=json.loads(row['data'])
-    return render(request,'watch.html',watch=watch,watch_id=watch_id,start_value=local_input(watch['start_at'],watch['timezone']),end_value=local_input(watch['end_at'],watch['timezone']))
+    return render(request,'watch.html',watch=watch,watch_id=watch_id,start_value=local_input(watch['start_at'],watch['timezone']),end_value=local_input(watch['end_at'],watch['timezone']),telegram_ready=bool(token and chat))
 
 def timestamp(value,zone):
     if not value:return None
@@ -394,10 +399,22 @@ async def source_toggle(request:Request,source:str):
 @app.get('/activity')
 def activity(request:Request):
     user=current_user(request)
+    day_ago=time.time()-86400
     with db.connect() as conn:
         runs=list(conn.execute('SELECT * FROM runs ORDER BY id DESC LIMIT 50'))
         events=list(conn.execute('SELECT e.*,json_extract(w.data,\'$.name\') name FROM events e JOIN watches w ON w.id=e.watch_id WHERE w.owner_id=? ORDER BY e.id DESC LIMIT 50',(user['id'],)))
-    return render(request,'activity.html',runs=runs,events=events)
+        raw_stats=list(conn.execute("""SELECT source,count(*) checks,
+            sum(CASE WHEN status IN ('verified working','experimental') THEN 1 ELSE 0 END) successful,
+            sum(CASE WHEN status IN ('verified working','experimental') AND count=0 THEN 1 ELSE 0 END) empty
+            FROM runs WHERE ended_at IS NOT NULL AND started_at>=? GROUP BY source ORDER BY source""",(day_ago,)))
+        delivery_stats={r['state']:r['n'] for r in conn.execute("""SELECT state,count(*) n FROM events e JOIN watches w ON w.id=e.watch_id
+            WHERE w.owner_id=? AND e.created_at>=? GROUP BY state""",(user['id'],day_ago))}
+    check_stats=[]
+    for row in raw_stats:
+        checks=int(row['checks']);successful=int(row['successful'] or 0)
+        check_stats.append({**dict(row),'checks':checks,'successful':successful,'empty':int(row['empty'] or 0),
+            'issues':checks-successful,'rate':round(successful*100/checks) if checks else 0})
+    return render(request,'activity.html',runs=runs,events=events,check_stats=check_stats,delivery_stats=delivery_stats)
 
 @app.get('/settings')
 def settings_page(request:Request):

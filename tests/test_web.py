@@ -11,7 +11,23 @@ def test_pages_empty_and_csrf():
         for url in ['/','/deals','/sources','/activity','/settings','/import','/watches/new','/health/ready']:
             response=client.get(url);assert response.status_code==200
         assert 'Create your first watch' in client.get('/').text
+        assert 'From your watch to your phone' in client.get('/').text
+        watch=client.get('/watches/new').text
+        assert 'LIVE PREVIEW' in watch and 'data-telegram-ready="false"' in watch
+        assert 'Candidates do not enter the outbox' in client.get('/activity').text
         assert client.post('/check-now',data={'csrf':'bad'}).status_code==403
+
+def test_activity_visual_summary_distinguishes_empty_success_from_failure():
+    import time
+    now=time.time()
+    with db.connect() as conn:
+        conn.execute("INSERT INTO runs(source,started_at,ended_at,status,count) VALUES('dealabs',?,?,?,?)",(now-20,now-15,'experimental',0))
+        conn.execute("INSERT INTO runs(source,started_at,ended_at,status,count) VALUES('dealabs',?,?,?,?)",(now-10,now-5,'challenge',0))
+    with TestClient(app) as client:
+        page=client.get('/activity').text
+        assert '1/2 checks' in page
+        assert '1 issue' in page
+        assert '1 empty result' in page
 
 def test_watch_crud_secret_redaction_and_untrusted_escape():
     with TestClient(app) as client:
