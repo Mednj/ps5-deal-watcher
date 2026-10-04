@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:pepper="http://www.pepper.com/rss">
+  <channel>
+    <title>Redacted PS5 deals</title>
+    <item>
+      <title>Redacted Game PS5</title>
+      <description>Version physique. Livraison gratuite.</description>
+      <link>https://www.dealabs.com/bons-plans/redacted-offer-123</link>
+      <pepper:merchant price="24.99" />
+    </item>
+  </channel>
+</rss>

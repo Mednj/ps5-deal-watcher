@@ -187,7 +187,7 @@ def search(request: Searches):
                             if status != 200:
                                 return fail('error',f"{query.name}: Leboncoin returned HTTP {status} on {sort} page {page_number}; diagnostics {run_id}.")
                             if challenge['challenge_blocking']:
-                                return fail('blocked',f"{query.name}: challenge {challenge['challenge_kind']} on {sort} page {page_number}; handler {handler}; diagnostics {run_id}.",86400)
+                                return fail('challenge',f"{query.name}: challenge {challenge['challenge_kind']} on {sort} page {page_number}; handler {handler}; diagnostics {run_id}.",86400)
                             phase='extraction'
                             selector = 'a[href*="/ad/jeux_video/"]'
                             try:
@@ -197,7 +197,7 @@ def search(request: Searches):
                                 flags=classify_page(text,page.title(),[f.url for f in page.frames])
                                 emit(run_id,'cards_missing',started,query=query.name,query_index=query_index,sort=sort,page=page_number,http_status=status,**flags)
                                 if not flags['empty_search_detected']:
-                                    return fail('error',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
+                                    return fail('format-change',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
                             rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => {
                                 const article = a.closest('article');
                                 const readText = node => {

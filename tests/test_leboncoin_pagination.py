@@ -76,7 +76,7 @@ def test_actual_search_stops_repeated_or_empty_pages(monkeypatch):
 def test_challenge_on_later_page_is_not_reported_as_success(monkeypatch):
     browser,seen=setup_browser(monkeypatch,lambda sort,page:[row(page)],blocked_page=3)
     result=browser.search(browser.Searches(queries=[{'name':'Elden Ring','budget':5000}]))
-    assert result['status']=='blocked' and result['items']==[]
+    assert result['status']=='challenge' and result['items']==[]
     assert seen==[('price',1),('price',2),('price',3)]
 
 def test_http_access_denial_stops_before_challenge_inspection_or_solver(monkeypatch):

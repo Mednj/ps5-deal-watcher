@@ -129,6 +129,21 @@ def test_scheduler_shared_fetch_cooldown_and_failures_preserve():
         assert conn.execute('SELECT count(*) FROM listings').fetchone()[0]==1
         assert conn.execute("SELECT status FROM sources WHERE id='dealabs'").fetchone()[0]=='blocked'
 
+@pytest.mark.parametrize('status',['challenge','format-change'])
+def test_parser_failure_categories_are_saved_without_replacing_listings(status):
+    persist(watch(max_cents=1600))
+    worker.tick(NOW,lambda _:sources.Outcome('verified working','Fixture success',[listing()]))
+    with db.connect() as conn:
+        conn.execute('UPDATE sources SET next_at=0 WHERE id=?',('dealabs',))
+        conn.execute('UPDATE watches SET next_at=0')
+    worker.tick(NOW+3601,lambda _:sources.Outcome(status,'No listings ingested; diagnostic fixture.',[],86400 if status=='challenge' else 0))
+    with db.connect() as conn:
+        assert conn.execute('SELECT status FROM runs ORDER BY id DESC LIMIT 1').fetchone()[0]==status
+        assert conn.execute("SELECT status FROM sources WHERE id='dealabs'").fetchone()[0]==status
+        assert conn.execute('SELECT count(*) FROM listings').fetchone()[0]==1
+        if status=='challenge':
+            assert conn.execute("SELECT next_at FROM sources WHERE id='dealabs'").fetchone()[0]>=NOW+3601+86400
+
 def test_lease_prevents_overlap():
     with db.connect() as conn:assert db.acquire(conn,'scheduler','first',NOW,600)
     worker.tick(NOW,lambda _:pytest.fail('Concurrent fetch occurred'))

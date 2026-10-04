@@ -17,6 +17,7 @@ from .models import Listing, HOSTS, cents
 from scripts.leboncoin_limits import MAX_PAGES, client_budget, CHECK_BUDGET
 from .matching import normalize, phrase
 from .query_batches import QueryBatch, advance as advance_query_batch, select as select_query_batch
+from scripts.browser_diagnostics import classify_page
 
 AGENT = 'PS5DealWatcher/0.1 (personal public-feed reader)'
 URLS = {'dealabs':'https://www.dealabs.com/rss/groupe/jeux-playstation-5',
@@ -84,6 +85,18 @@ def fetch_bytes(source, url, max_bytes=4_000_000, stage='feed'):
 def plain(value):
     return BeautifulSoup(value,'html.parser').get_text(' ',strip=True)
 
+def _html_flags(body):
+    soup=BeautifulSoup(body,'html.parser')
+    title=soup.title.get_text(' ',strip=True) if soup.title else ''
+    text=soup.get_text(' ',strip=True)
+    return classify_page(text,title)
+
+def _parse_failure(body, expected):
+    flags=_html_flags(body)
+    if flags['challenge_detected']:
+        return FetchError('challenge','Challenge page detected; no listings were ingested. No challenge solver was attempted.',86400)
+    return FetchError('format-change',f'Expected {expected}; response format changed or was unreadable. No listings were ingested.')
+
 def euro_near(text, patterns):
     for pattern in patterns:
         found=re.search(pattern,text,re.I)
@@ -94,9 +107,9 @@ def euro_near(text, patterns):
 
 def parse_dealabs(body):
     try: root=ET.fromstring(body)
-    except ET.ParseError as exc: raise FetchError('error','Expected RSS XML; parser failed or a challenge page was returned.') from exc
+    except ET.ParseError as exc: raise _parse_failure(body,'Dealabs RSS XML') from exc
     if root.tag!='rss' or root.find('channel') is None:
-        raise FetchError('error','Expected RSS channel; received another document.')
+        raise _parse_failure(body,'Dealabs RSS channel')
     results=[]
     for item in root.findall('./channel/item')[:100]:
         title=plain(item.findtext('title',''))
@@ -121,13 +134,14 @@ def parse_dealabs(body):
             results.append(Listing(source='dealabs',external_id=url.rsplit('-',1)[-1],url=url,title=title,description=description[:15000],item_cents=price_cents,shipping_cents=shipping,fees_cents=fees,delivery=True if shipping is not None else None,platform=platform,physical=physical,price_kind=price_kind,condition='unknown',provenance='public PS5 RSS feed',availability='unverified',image=image.get('url','') if image is not None else ''))
         except ValueError:continue
     if root.findall('./channel/item') and not results:
-        raise FetchError('error','RSS contained entries but no prices could be parsed; adapter needs review.')
+        raise FetchError('format-change','Dealabs RSS entries were present but none had a parseable price; no listings were ingested.')
     return results
 
 def parse_easycash(body):
     soup=BeautifulSoup(body,'html.parser')
-    if 'captcha' in soup.title.get_text().lower() if soup.title else False:
-        raise FetchError('blocked','Challenge page returned.')
+    flags=_html_flags(body)
+    if flags['challenge_detected']:
+        raise FetchError('challenge','Challenge page detected; no listings were ingested. No challenge solver was attempted.',86400)
     results=[]; seen=set()
     for anchor in soup.select('a.link-buy[href]'):
         url=anchor['href']
@@ -138,14 +152,18 @@ def parse_easycash(body):
         price_node=card.select_one('.infos-price-number')
         if price_node is None:continue
         text=price_node.get_text(' ',strip=True)
-        price=euro_near(text,[r'(\d+(?:[,.]\d{1,2})?)\s*€'])
+        price=euro_near(text,[r'(\d+(?:[,.]\d{1,2})?)\s*\u20ac'])
         if price is None:continue
         title=anchor.get_text(' ',strip=True)
         if not title:continue
         try:
             results.append(Listing(source='easycash',external_id=url.rsplit('-',1)[-1],url=url,title=title,item_cents=price,condition='used',platform='ps5',physical=None,description='Catalogue reference across multiple offers. Open the source to choose an actual offer, confirm disc, stock and total.',price_kind='from',delivery=None,provenance='public first catalogue page; aggregate reference price',availability='unverified'))
         except ValueError:continue
-    if not results:raise FetchError('error','Catalogue parser found no priced product cards. This is not an empty successful check.')
+    if not results:
+        text=soup.get_text(' ',strip=True)
+        if any(phrase(term,text) for term in ('aucun produit','aucun article','aucun résultat','no products','no results')):
+            return []
+        raise FetchError('format-change','Easy Cash catalogue had no recognized priced cards or explicit empty-results message; no listings were ingested.')
     return results
 
 def check(source):
@@ -161,7 +179,9 @@ def check(source):
             return Outcome('blocked','robots.txt disallows this path. No page fetched.',[])
         body=fetch_bytes(source,url,stage='feed' if source=='dealabs' else 'catalogue')
         listings=parse_dealabs(body) if source=='dealabs' else parse_easycash(body)
-        return Outcome('verified working' if source=='dealabs' else 'experimental',f'{len(listings)} recent feed entries.' if source=='dealabs' else f'{len(listings)} first-page catalogue references; review only.',listings)
+        detail=f'{len(listings)} recent feed entries.' if source=='dealabs' else f'{len(listings)} first-page catalogue references; review only.'
+        if not listings:detail+=' Valid response contained no results.'
+        return Outcome('verified working' if source=='dealabs' else 'experimental',detail,listings)
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except httpx.HTTPError:return Outcome('error','Network timeout or connection error. Existing listings preserved.',[])
     except Exception:return Outcome('error','Unexpected adapter/parser failure. Existing listings preserved.',[])
@@ -193,9 +213,9 @@ def vinted_response(client, url, stage='catalogue', **kwargs):
 
 def parse_vinted(body):
     try: payload=json.loads(body)
-    except (ValueError,TypeError):raise FetchError('error','Vinted returned invalid JSON or a challenge page.')
+    except (ValueError,TypeError):raise _parse_failure(body,'Vinted catalogue JSON')
     if not isinstance(payload,dict) or not isinstance(payload.get('items'),list):
-        raise FetchError('error','Vinted catalogue schema changed; expected items list.')
+        raise FetchError('format-change','Vinted catalogue schema changed; expected an items list. No listings were ingested.')
     results=[]
     for item in payload['items'][:24]:
         if not isinstance(item,dict):continue
@@ -209,7 +229,22 @@ def parse_vinted(body):
             unavailable=bool(item.get('is_closed') or item.get('is_reserved') or item.get('is_sold'))
             results.append(Listing(source='vinted',external_id=str(item['id']),url=urljoin('https://www.vinted.fr/',str(item['url'])),title=title,item_cents=cents(str(price['amount'])),platform=platform,physical=None,delivery=None,availability='unavailable' if unavailable else 'unverified',provenance='experimental anonymous Vinted catalogue',description='Item price only. Disc, edition, delivery, buyer protection and shipping must be confirmed on Vinted. Pickup location unknown.'))
         except (ValueError,TypeError,KeyError,AttributeError):continue
-    if payload['items'] and not results:raise FetchError('error','Vinted entries could not be parsed; adapter needs review.')
+    if payload['items'] and not results:
+        # A structurally valid list filtered to no eligible prices is a legitimate
+        # empty result. A list made entirely of malformed item records is schema drift.
+        valid_shape=False
+        for item in payload['items']:
+            try:
+                valid_shape=(isinstance(item,dict) and all(key in item for key in ('id','title','url'))
+                             and isinstance(item['price'],dict)
+                             and all(key in item['price'] for key in ('amount','currency_code'))
+                             and bool(str(item['title']).strip()) and bool(str(item['url']).strip())
+                             and cents(str(item['price']['amount']))>0
+                             and bool(str(item['price']['currency_code']).strip()))
+            except (KeyError,TypeError,ValueError):valid_shape=False
+            if valid_shape:break
+        if not valid_shape:
+            raise FetchError('format-change','Vinted items no longer match the expected item schema; no listings were ingested.')
     return results
 
 
@@ -254,14 +289,16 @@ def check_vinted(queries=None):
                         if listing.item_cents<=budget:results[listing.external_id]=listing
         if from_watches:
             with db.connect() as conn:advance_query_batch(conn,'vinted',batch)
-        return Outcome('experimental',f'{len(results)} catalogue listings from {len(queries)} searches ({batch.describe()}; cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.',list(results.values()))
+        detail=f'{len(results)} catalogue listings from {len(queries)} searches ({batch.describe()}; cheapest + newest, deduplicated). Item prices only; disc, delivery and fees need review.'
+        if not results:detail+=' Responses parsed successfully; no catalogue results matched these searches.'
+        return Outcome('experimental',detail,list(results.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except httpx.HTTPError:return Outcome('error','Vinted network timeout or connection error. Existing listings preserved.',[])
     except Exception:return Outcome('error','Vinted adapter/parser failed. Existing listings preserved.',[])
 
 
 def parse_leboncoin(items):
-    if not isinstance(items,list):raise FetchError('error','Browser returned invalid listing schema.')
+    if not isinstance(items,list):raise FetchError('format-change','Leboncoin browser returned an invalid cards schema; no listings were ingested.')
     results=[]
     for item in items:
         try:
@@ -272,7 +309,7 @@ def parse_leboncoin(items):
             unavailable=any(phrase(term,text) for term in ['achat en cours','vendu','annonce expirée'])
             results.append(Listing(source='leboncoin',external_id=urlsplit(url).path.rsplit('/',1)[-1],url=url,title=title,description=text[:5000],item_cents=cents(found.group(1)),platform=platform,physical=None,delivery=True if phrase('livraison',text) else None,availability='unavailable' if unavailable else 'unverified',provenance='experimental headed browser search cards'))
         except (KeyError,TypeError,ValueError,AttributeError):continue
-    if items and not results:raise FetchError('error','No advertised item prices parsed; browser cards need review.')
+    if items and not results:raise FetchError('format-change','Leboncoin cards were present but no advertised item prices parsed; no listings were ingested.')
     return results
 
 
@@ -307,7 +344,7 @@ def check_leboncoin(queries=None):
             if response.status_code!=200:return Outcome('error','Internal browser service unavailable or rejected input.',[])
             payload=response.json()
         status=payload.get('status')
-        if status not in ('experimental','blocked','rate-limited','error'):raise FetchError('error','Browser returned invalid status.')
+        if status not in ('experimental','blocked','challenge','format-change','rate-limited','error'):raise FetchError('format-change','Browser returned an unrecognized status; no listings were ingested.')
         if status!='experimental':
             detail=payload.get('message','Browser check failed.')
             searches=payload.get('searches',[])
@@ -324,6 +361,7 @@ def check_leboncoin(queries=None):
         raw_count=len(raw_items) if isinstance(raw_items,list) else 0
         detail=f"Parsed {len(listings)} listings from {raw_count} extracted cards; {payload.get('pages_fetched','unknown')} pages fetched. {batch.describe()}. Up to {MAX_PAGES} per cheapest/newest search."
         if summary:detail+=f' Searches: {summary}.'
+        if not listings:detail+=' Valid search pages contained no matching cards.'
         return Outcome('experimental',detail+' Item prices; game-name matching applies.',list(listings.values()))
     except FetchError as exc:return Outcome(exc.status,exc.message,[],exc.retry_after)
     except Exception:return Outcome('error','Leboncoin browser connection or parser failed. Existing listings preserved.',[])

@@ -72,7 +72,7 @@ def tick(now=None,checker=sources.check):
                 failures=0 if success else source['failures']+1
                 interval=max(sources.MIN_INTERVAL[source_id],min(w.interval_minutes*60 for _,w in interested))
                 backoff=max(outcome.retry_after,min(86400,interval*2**min(failures,5))) if failures else interval
-                if outcome.status=='blocked' or failures>=3:backoff=max(backoff,86400)
+                if outcome.status in ('blocked','challenge') or failures>=3:backoff=max(backoff,86400)
                 next_at=finished+backoff+(0 if success and source_id in ('dealabs','vinted','leboncoin') else random.uniform(1,30))
                 with db.connect() as conn:
                     if success:
