@@ -200,7 +200,20 @@ def search(request: Searches):
                                     return fail('error',f"{query.name}: no cards and no confirmed empty-results page on {sort} page {page_number}; diagnostics {run_id}; needs review.")
                             rows = page.locator(selector).evaluate_all("""links => links.slice(0,200).map(a => {
                                 const article = a.closest('article');
-                                const readText = node => (node?.textContent || '').replace(/\\s+/g, ' ').trim();
+                                const readText = node => {
+                                    if (!node) return '';
+                                    const visible = (node.innerText || '').trim();
+                                    if (visible) return visible;
+                                    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+                                    const parts = [];
+                                    while (walker.nextNode()) {
+                                        const textNode = walker.currentNode;
+                                        if (textNode.parentElement?.closest('style,script,noscript,template')) continue;
+                                        const value = (textNode.nodeValue || '').replace(/\\s+/g, ' ').trim();
+                                        if (value) parts.push(value);
+                                    }
+                                    return parts.join(' ');
+                                };
                                 let text = readText(article);
                                 if (!text) {
                                     let fallback = '';
