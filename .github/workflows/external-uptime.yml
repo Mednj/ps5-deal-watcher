@@ -1,0 +1,27 @@
+name: External uptime check
+
+on:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-uptime
+  cancel-in-progress: true
+
+jobs:
+  probe:
+    name: Check public app health
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Probe public endpoints
+        env:
+          UPTIME_BASE_URL: https://deals-watcher.yndevs.com
+        run: python scripts/uptime_probe.py

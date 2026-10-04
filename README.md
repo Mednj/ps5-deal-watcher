@@ -100,11 +100,13 @@ Do not use `docker compose down -v`: that removes the app's persistent volume. C
 
 Health URLs: `/health/live`, `/health/ready` and `/health/worker` (503 for stale worker heartbeat). Source health and recent errors are in the dashboard. Logs are capped at three 5 MB files per service. The SQLite database uses WAL, transactions, uniqueness constraints and scheduler/source/delivery leases.
 
+`.github/workflows/external-uptime.yml` runs from a GitHub-hosted runner every 15 minutes and can be started manually from Actions. It checks the public login, database-readiness and worker-health endpoints without credentials, so it can detect a home-server outage independently. GitHub may delay or drop scheduled runs during high load; configure GitHub Actions failure notifications in your account if you want email/web alerts.
+
 ## Backup and restore
 
 The backup helper uses SQLite's backup API to create a consistent snapshot while the app is running. Never copy only the live `.sqlite3` file while WAL writes are in progress.
 
-Compose runs a dedicated backup container. It creates an integrity-checked snapshot at startup and every 24 hours, retaining the latest 14 snapshots in a separate `watcher-backups` volume. It reads the live data volume read-only and has no Telegram credentials. Docker marks it unhealthy if a valid recent snapshot is missing; the Monitoring page also reports backup freshness. Both volumes are still on the same host, so copy important snapshots off-host for protection from host or disk loss. A database or disk failure can also prevent creation of new backups.
+Compose runs a dedicated backup container. It creates an integrity-checked snapshot at startup and every 24 hours, retaining the latest 14 snapshots in a separate `watcher-backups` volume. Before promoting a new snapshot, it restores it into a disposable directory and verifies integrity, schema, and table row counts. An existing unverified snapshot gets the same drill at startup. The monitor considers the latest backup healthy only when a matching restore-verification marker exists; Docker also runs an integrity check hourly. The service reads the live data volume read-only and has no Telegram credentials. Both volumes are still on the same host, so copy important snapshots off-host for protection from host or disk loss. A database or disk failure can also prevent creation of new backups.
 
 ```sh
 docker compose exec -T web python -m scripts.backup /data/backups/watcher.sqlite3

@@ -4,10 +4,10 @@ import os
 import signal
 import time
 import httpx
-from pathlib import Path
 from . import db, service, sources
 from .matching import eligible, quiet, match
 from .models import Watch, Listing
+from scripts.backup_daemon import backup_healthy as backup_snapshot_healthy
 
 SUCCESS = ('verified working', 'experimental')
 
@@ -26,10 +26,8 @@ def read_json(url):
             return response.json()
     except Exception:return None
 
-def backup_healthy(directory='/backups',now=None):
-    now=time.time() if now is None else now
-    files=list(Path(directory).glob('watcher-*.sqlite3'))
-    return bool(files and now-max(p.stat().st_mtime for p in files)<48*3600)
+def backup_healthy(directory='/backups',now=None,check_integrity=False):
+    return backup_snapshot_healthy(directory,now,check_integrity)
 
 def snapshot(conn, now, health, browser_progress=None):
     cfg=db.settings(conn)

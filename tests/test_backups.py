@@ -2,7 +2,7 @@ import os
 import sqlite3
 import subprocess
 import sys
-from scripts.backup_daemon import backup_once
+from scripts.backup_daemon import backup_once,restore_verification_valid
 from app import db
 
 def test_atomic_backup_rotation_and_restore(tmp_path,monkeypatch):
@@ -12,6 +12,11 @@ def test_atomic_backup_rotation_and_restore(tmp_path,monkeypatch):
     monkeypatch.setenv('BACKUP_INTERVAL_SECONDS','3600')
     with db.connect() as conn:db.setting(conn,'backup_test','state-before-backup')
     first=backup_once(force=True)
+    assert restore_verification_valid(backup_dir,first)
+    (backup_dir/'.restore-verified').unlink()
+    assert not restore_verification_valid(backup_dir,first)
+    assert backup_once()==first
+    assert restore_verification_valid(backup_dir,first)
     snapshot=sqlite3.connect(first)
     try:
         assert snapshot.execute('PRAGMA integrity_check').fetchone()[0]=='ok'

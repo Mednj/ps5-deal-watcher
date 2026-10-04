@@ -94,10 +94,19 @@ def test_paginated_check_uses_longer_monitor_budget():
         assert 'stuck:leboncoin' in problems
 
 def test_backup_health_requires_recent_snapshot(tmp_path):
+    import json
     import os
+    import sqlite3
     from app.monitoring import backup_healthy
     assert not backup_healthy(tmp_path,now=10000)
-    backup=tmp_path/'watcher-test.sqlite3';backup.write_bytes(b'test')
+    backup=tmp_path/'watcher-test.sqlite3'
+    with sqlite3.connect(backup) as conn:
+        conn.execute('CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)')
+        conn.execute("INSERT INTO metadata VALUES('schema_version','1')")
     os.utime(backup,(10000,10000))
+    (tmp_path/'.restore-verified').write_text(json.dumps({'backup':backup.name,'verified_at':10000}))
     assert backup_healthy(tmp_path,now=10000)
+    assert backup_healthy(tmp_path,now=10000,check_integrity=True)
     assert not backup_healthy(tmp_path,now=10000+48*3600+1)
+    (tmp_path/'.restore-verified').write_text(json.dumps({'backup':backup.name,'verified_at':0}))
+    assert not backup_healthy(tmp_path,now=10000)
