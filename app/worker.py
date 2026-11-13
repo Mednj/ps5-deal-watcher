@@ -11,6 +11,17 @@ from .models import Watch, Listing
 from .matching import eligible, manual_check
 
 STOP=False
+
+def vinted_interval(config):
+    """Optional deployment override; retain source backoff on failures."""
+    value=config.get('vinted_interval_seconds')
+    return max(30, int(value)) if value else None
+
+def watch_interval(watch, config):
+    interval=watch.interval_minutes*60
+    override=vinted_interval(config)
+    return min(interval, override) if override and 'vinted' in watch.sources else interval
+
 def stop(*_):
     global STOP
     STOP=True
@@ -71,6 +82,7 @@ def tick(now=None,checker=sources.check):
                 success=outcome.status in ('verified working','experimental')
                 failures=0 if success else source['failures']+1
                 interval=max(sources.MIN_INTERVAL[source_id],min(w.interval_minutes*60 for _,w,_ in interested))
+                if source_id=='vinted' and vinted_interval(config):interval=vinted_interval(config)
                 backoff=max(outcome.retry_after,min(86400,interval*2**min(failures,5))) if failures else interval
                 if outcome.status in ('blocked','challenge') or failures>=3:backoff=max(backoff,86400)
                 next_at=finished+backoff+(0 if success and source_id in ('dealabs','vinted','leboncoin') else random.uniform(1,30))
@@ -92,7 +104,7 @@ def tick(now=None,checker=sources.check):
             for watch_id,watch,watch_owner in due:
                 # Coalesce missed checks after restart; never replay a backlog.
                 # Long checks shift the next due time from completion, avoiding immediate catch-up loops.
-                conn.execute('UPDATE watches SET next_at=? WHERE id=?',(max(now,time.time())+watch.interval_minutes*60,watch_id))
+                conn.execute('UPDATE watches SET next_at=? WHERE id=?',(max(now,time.time())+watch_interval(watch,config),watch_id))
                 # Offset watch schedules must reuse a fresh shared source snapshot.
                 # Otherwise a watch whose poll follows another watch's fetch can starve forever.
                 enabled={r['id'] for r in conn.execute('SELECT id FROM sources WHERE enabled=1')}

@@ -200,3 +200,7 @@ Web/browser/worker failures alert after three minutes of observed failure. Sourc
 The monitor is independent of the worker but shares the host and database. It cannot notify during a total host outage or a Telegram outage, and Docker/DB failure can stop monitoring too. Its sample timestamp and Docker health check identify a stalled monitor locally; external uptime monitoring needs another machine. Adapter success does not prove complete marketplace coverage. See `IMPROVEMENTS.md` for proposed resilience and accuracy work.
 
 Worker startup recovers orphaned running checks and scheduler/source leases. This deployment supports exactly one worker; do not scale replicas without implementing coordinated startup ownership. Existing delivery leases retain their timeout-based recovery.
+
+### Vinted deployment interval override
+
+The database setting `vinted_interval_seconds` overrides Vinted's successful-check interval (minimum 30 seconds). Watches using Vinted wake at that interval; other sources keep their own source intervals. Checking windows and failure/rate-limit backoff still apply. The interval runs from completion, with up to 10 seconds of worker polling delay. Remove the setting to restore per-watch intervals.
